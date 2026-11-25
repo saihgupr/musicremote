@@ -389,8 +389,12 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
     }
     // 2 is loved, 0 is clear. Writing the database directly would race
     // medialibraryd, so go through the library object that owns the write.
-    [library setValues:@[on ? @2 : @0]
-          forProperties:@[@"likedState"]
+    // The "changed" pair marks the row for the next iCloud library sync;
+    // without it the like stays local and can be overwritten by the cloud.
+    // Dates in this database count seconds from 2001, as integers.
+    long long appleNow = (long long)[[NSDate date] timeIntervalSince1970] - 978307200LL;
+    [library setValues:@[on ? @2 : @0, @1, @(appleNow)]
+          forProperties:@[@"likedState", @"likedStateChanged", @"likedStateChangedDate"]
   forItemPersistentIDs:@[pid]];
     NSMutableDictionary *data = [MRStatusDict() mutableCopy];
     data[@"liked"] = @(on);

@@ -85,33 +85,36 @@ negative SQLite values are reinterpreted as unsigned.
  "album":"Kind of Blue","index":1,"total":5,
  "elapsed":12.4,"duration":545.0,"shuffle":"off",
  "albumID":"1421350079176516109","albumArtistID":"4273702906016223495",
- "trackID":"5481794911435167","disc":1,"track":1}
+ "trackID":"5481794911435167","storeID":"1440857781","disc":1,"track":1}
 ```
 
-The three ID fields are 64-bit and therefore decimal strings. The CLI uses them
-for the `current` commands, so it can queue the right album without matching on
-names. `albumID` is the album of the now-playing item, `albumArtistID` its
-album artist, `trackID` the item itself.
+The ID fields are decimal strings. The CLI uses them for the current-item
+commands, so it can queue the right album without matching on names. `albumID`
+is the album of the now-playing item, `albumArtistID` its album artist,
+`trackID` the item itself. `storeID` is the catalogue ID, present even for a
+track that is not in the library; that is what the album lookup uses.
 
 ### Current-item queueing
 
-The CLI turns a `status` response into one of these:
+The CLI turns a `status` response into one of these (`current` still works as
+an alias for `queue`):
 
-- `current album` replaces the queue with the playing album, starting at the
-  current track.
-- `current album --from-start` starts at track 1 instead.
-- `current album --rest` appends only the tracks after the current one.
-- `current album --next` inserts those tracks directly after the now playing
-  item, so they start when the current song ends.
-- `current album --append` appends the whole album, playback untouched.
-- `current artist` replaces the queue with every track by the album artist,
+- `queue album` inserts the rest of the playing album after the current track.
+- `queue album --rest` appends only the tracks after the current one.
+- `queue album --next` is the default, same as above.
+- `queue album --append` appends the whole album, playback untouched.
+- `queue album --from-start` replaces the queue, starting at track 1.
+- `queue artist` replaces the queue with every track by the album artist,
   starting at the current track.
-- `current artist --next` inserts the artist's other tracks after the current
+- `queue artist --next` inserts the artist's other tracks after the current
   song.
-- `current artist --append` appends them instead.
+- `queue artist --append` appends them instead.
 
-They resolve IDs through the database exactly like the name commands, so
-`queueByStore` stays the only transport.
+For albums, the playing track's store ID is looked up against Apple's public
+iTunes API and the album's full running order replaces the library list, so a
+partly added album still plays end to end. The library list is the fallback
+when the lookup fails. Artists stay library-only. `queueByStore` remains the
+only transport.
 
 `queueByStore` data adds `queued`, `mode`, and the same status fields.
 `queueByID` adds `mode` and `id` but no `queued`.

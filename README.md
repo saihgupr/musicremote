@@ -104,6 +104,10 @@ Quotes are optional. All words after the subcommand form the query, so
 leave that song out, so nothing is heard twice. `--append` puts them at the end
 instead.
 
+An album is resolved through Apple's public iTunes lookup, not just the local
+library, so an album with only a few songs added still plays end to end. That
+needs network; without it the library's own tracks are used.
+
 ## Limits
 
 - 600 tracks per request (the wire body is built dynamically).

@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <spawn.h>
 #include <sqlite3.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -25,7 +26,10 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+extern char **environ;
 
 #define DIR_PATH        "/var/mobile/Media/.musicremote"
 #define DB_PATH         "/var/mobile/Media/iTunes_Control/iTunes/MediaLibrary.sqlitedb"
@@ -323,6 +327,132 @@ static char *json_raw(const char *obj, const char *key, const char *def) {
 	memcpy(p, v, (size_t)(e - v));
 	p[e - v] = '\0';
 	return p;
+}
+
+/* ---------- catalogue album lookup ---------- */
+
+/* The library only knows the tracks that were added to it, which is often a
+ * few songs out of a full album. iTunes' public lookup API returns the whole
+ * running order for a store ID, so an album can be queued end to end even when
+ * most of it was never added. No account or token needed. */
+#define CURL_PATH "/var/jb/usr/bin/curl"
+#define CATALOG_MAX 500
+#define CATALOG_TIMEOUT "3"
+
+typedef struct { long long id; int disc, track; } catalog_track_t;
+
+static char *read_text_file(const char *path) {
+	FILE *f = fopen(path, "rb");
+	if (!f) return NULL;
+	if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+	long len = ftell(f);
+	if (len < 0 || len > 8 * 1024 * 1024) { fclose(f); return NULL; }
+	rewind(f);
+	char *buf = malloc((size_t)len + 1);
+	if (!buf) { fclose(f); return NULL; }
+	size_t got = fread(buf, 1, (size_t)len, f);
+	fclose(f);
+	buf[got] = '\0';
+	return buf;
+}
+
+/* curl with a hard timeout; false on any failure. Spawned directly because a
+ * rootless device has no /bin/sh for system(). */
+static int curl_get(const char *url, const char *out_path) {
+	char *argv[] = { (char *)CURL_PATH, (char *)"-fsS",
+	                 (char *)"--max-time", (char *)CATALOG_TIMEOUT,
+	                 (char *)"-o", (char *)out_path, (char *)url, NULL };
+	pid_t pid;
+	int status = 0;
+	if (posix_spawn(&pid, CURL_PATH, NULL, NULL, argv, environ) != 0) return 0;
+	if (waitpid(pid, &status, 0) < 0) return 0;
+	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+static long long catalog_collection_id(const char *json) {
+	const char *results = json_value(json, "results");
+	if (!results || *results != '[') return 0;
+	const char *first = skip_ws(results + 1);
+	if (*first != '{') return 0;
+	double value = 0;
+	if (!json_num(first, "collectionId", &value) || value <= 0) return 0;
+	return (long long)value;
+}
+
+static int catalog_parse_tracks(const char *json, catalog_track_t *out, int max) {
+	const char *results = json_value(json, "results");
+	if (!results || *results != '[') return 0;
+	int n = 0;
+	const char *p = results + 1;
+	for (;;) {
+		p = skip_ws(p);
+		if (*p == ',') { p++; continue; }
+		if (*p != '{') break;
+		const char *end = skip_value(p);
+		if (!end) break;
+		char wrapper[24] = "";
+		double id = 0, disc = 1, track = 0;
+		if (json_str(p, "wrapperType", wrapper, sizeof wrapper) &&
+		    !strcmp(wrapper, "track") &&
+		    json_num(p, "trackId", &id) && id > 0 &&
+		    json_num(p, "trackNumber", &track) && track > 0) {
+			if (!json_num(p, "discNumber", &disc) || disc < 1) disc = 1;
+			if (n < max) {
+				out[n].id = (long long)id;
+				out[n].disc = (int)disc;
+				out[n].track = (int)track;
+				n++;
+			}
+		}
+		p = end;
+	}
+	return n;
+}
+
+/* Album tracks in play order for the album that contains anchor, or 0 when the
+ * lookup fails or the store does not know it. */
+static int catalog_album_ids(long long anchor, long long *ids, int max) {
+	if (anchor == 0 || max <= 0) return 0;
+	char url[256], path[PATH_MAX];
+	snprintf(path, sizeof path, "%s/catalog.json", dir_path);
+
+	snprintf(url, sizeof url,
+	         "https://itunes.apple.com/lookup?id=%lld&entity=song&limit=5", anchor);
+	unlink(path);
+	if (!curl_get(url, path)) { unlink(path); return 0; }
+	char *body = read_text_file(path);
+	unlink(path);
+	if (!body) return 0;
+	long long collection = catalog_collection_id(body);
+	free(body);
+	if (collection == 0) return 0;
+
+	snprintf(url, sizeof url,
+	         "https://itunes.apple.com/lookup?id=%lld&entity=song&limit=200", collection);
+	unlink(path);
+	if (!curl_get(url, path)) { unlink(path); return 0; }
+	body = read_text_file(path);
+	unlink(path);
+	if (!body) return 0;
+	catalog_track_t tracks[CATALOG_MAX];
+	int n = catalog_parse_tracks(body, tracks, CATALOG_MAX);
+	free(body);
+	if (n <= 0) return 0;
+
+	/* iTunes returns album order already, but discs make that an assumption. */
+	for (int i = 1; i < n; i++) {
+		catalog_track_t key = tracks[i];
+		int j = i - 1;
+		while (j >= 0 && (tracks[j].disc > key.disc ||
+		                  (tracks[j].disc == key.disc && tracks[j].track > key.track))) {
+			tracks[j + 1] = tracks[j];
+			j--;
+		}
+		tracks[j + 1] = key;
+	}
+	if (n > max) n = max;
+	for (int i = 0; i < n; i++) ids[i] = tracks[i].id;
+	return n;
 }
 
 /* ---------- transport ---------- */
@@ -1153,7 +1283,7 @@ static int cmd_raw(int ac, char **av, int as_json) {
 
 typedef struct {
 	char state[32], title[256], album[256], artist[256];
-	char album_id[24], album_artist_id[24], track_id[24];
+	char album_id[24], album_artist_id[24], track_id[24], store_id[24];
 } now_playing_t;
 
 static void read_now_playing(const char *data, now_playing_t *np) {
@@ -1165,6 +1295,7 @@ static void read_now_playing(const char *data, now_playing_t *np) {
 	json_str(data, "albumID", np->album_id, sizeof np->album_id);
 	json_str(data, "albumArtistID", np->album_artist_id, sizeof np->album_artist_id);
 	json_str(data, "trackID", np->track_id, sizeof np->track_id);
+	json_str(data, "storeID", np->store_id, sizeof np->store_id);
 }
 
 /* Store ID of the item that is playing right now, or 0 when unknown. Used to
@@ -1179,6 +1310,9 @@ static long long playing_store_id(void) {
 	now_playing_t np;
 	read_now_playing(status, &np);
 	free(status);
+	/* A catalogue-only track reports no persistent ID, but it does report the
+	 * store ID, which is all the queue needs. */
+	if (np.store_id[0]) return parse_pid(np.store_id);
 	if (!np.track_id[0]) return 0;
 	sqlite3 *h = open_db();
 	long long one[1] = { 0 };
@@ -1318,34 +1452,49 @@ static int cmd_current(int ac, char **av, int as_json) {
 	now_playing_t np;
 	read_now_playing(status, &np);
 	free(status);
-	/* No IDs, or a blank state with no album, means nothing is loaded. */
-	int have_id = is_album ? np.album_id[0] : np.album_artist_id[0];
-	if (!have_id || (!np.state[0] && !np.album_id[0]))
+	/* A catalogue-only track has no library album ID, but it carries a store
+	 * ID, which is enough to find the album. */
+	int have_anchor = is_album ? (np.album_id[0] != 0 || np.store_id[0] != 0)
+	                           : np.album_artist_id[0] != 0;
+	if (!have_anchor || (!np.state[0] && !np.album_id[0] && !np.store_id[0]))
 		local_fail("nothing is playing");
 
-	sqlite3_int64 pid = parse_pid(is_album ? np.album_id : np.album_artist_id);
+	sqlite3_int64 pid = is_album
+		? (np.album_id[0] ? parse_pid(np.album_id) : 0)
+		: parse_pid(np.album_artist_id);
 	sqlite3 *h = open_db();
 	long long ids[MAX_STORE_IDS];
-	int n = store_ids(h, is_album ? SQL_STORE_ALBUM : SQL_STORE_ARTIST, pid, ids, what);
-	if (n == 0) {
-		close_db(h);
-		local_fail("no stream ids for this %s", what);
-	}
+	int n = pid != 0 ? store_ids(h, is_album ? SQL_STORE_ALBUM : SQL_STORE_ARTIST, pid, ids, what) : 0;
 	char name[256] = "";
-	lookup_name(h, is_album ? SQL_ALBUM_NAME : SQL_ARTIST_NAME, pid, name, sizeof name);
+	if (pid != 0)
+		lookup_name(h, is_album ? SQL_ALBUM_NAME : SQL_ARTIST_NAME, pid, name, sizeof name);
 	if (!name[0]) snprintf(name, sizeof name, "%s", is_album ? np.album : np.artist);
 	if (!name[0]) snprintf(name, sizeof name, "(unknown)");
+	long long playing_store = np.store_id[0] ? parse_pid(np.store_id) : 0;
+	if (playing_store == 0 && np.track_id[0]) {
+		long long one[1];
+		if (store_ids(h, SQL_STORE_SONG, parse_pid(np.track_id), one, "song") > 0)
+			playing_store = one[0];
+	}
+	close_db(h);
+
+	/* queue album asks the catalogue for the album's full running order, so a
+	 * partly added album still plays end to end. The library list stays as the
+	 * fallback when the lookup fails or the store has a different edition. */
+	if (is_album && playing_store != 0) {
+		long long full[MAX_STORE_IDS];
+		int full_n = catalog_album_ids(playing_store, full, MAX_STORE_IDS);
+		if (full_n > 0 && (n == 0 || index_of_id(full, full_n, playing_store) >= 0)) {
+			memcpy(ids, full, sizeof(long long) * (size_t)full_n);
+			n = full_n;
+		}
+	}
+	if (n == 0) local_fail("no stream ids for this %s", what);
 
 	/* --rest and the default both need the playing track's store ID, found by
 	 * position in the ordered list. That position is exactly what the player
 	 * will play, so disc/track numbers are not used for it. */
-	int track_index = -1;
-	if (np.track_id[0]) {
-		long long track_store[1];
-		if (store_ids(h, SQL_STORE_SONG, parse_pid(np.track_id), track_store, "song") > 0)
-			track_index = index_of_id(ids, n, track_store[0]);
-	}
-	close_db(h);
+	int track_index = playing_store != 0 ? index_of_id(ids, n, playing_store) : -1;
 
 	const long long *send_ids = ids;
 	int send_n = n;
@@ -1484,6 +1633,17 @@ int main(int argc, char **argv) {
 		long long ids[MAX_STORE_IDS];
 		int n = store_ids(h, store_sql, pid, ids, a);
 		close_db(h);
+
+		/* An album name queues the catalogue's full running order, so tracks
+		 * that were never added to the library are included too. */
+		if (!strcmp(a, "album") && n > 0) {
+			long long full[MAX_STORE_IDS];
+			int full_n = catalog_album_ids(ids[0], full, MAX_STORE_IDS);
+			if (full_n > 0) {
+				memcpy(ids, full, sizeof(long long) * (size_t)full_n);
+				n = full_n;
+			}
+		}
 
 		/* next and append must not re-queue the track already playing. */
 		if (n > 0 && (!strcmp(mode, "next") || !strcmp(mode, "append"))) {

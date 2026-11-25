@@ -159,6 +159,9 @@ static NSDictionary *MRStatusDict(void) {
     data[@"title"] = item ? MRItemString(item, MPMediaItemPropertyTitle) : @"";
     data[@"artist"] = item ? MRItemString(item, MPMediaItemPropertyArtist) : @"";
     data[@"album"] = item ? MRItemString(item, MPMediaItemPropertyAlbumTitle) : @"";
+    // Catalogue-only tracks have no library persistent IDs, but they do carry
+    // a store ID, which is what the album lookup needs.
+    data[@"storeID"] = item ? MRItemString(item, MPMediaItemPropertyPlaybackStoreID) : @"";
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     NSUInteger index = player.indexOfNowPlayingItem;

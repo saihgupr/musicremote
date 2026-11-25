@@ -203,7 +203,7 @@ static NSDictionary *MRStatusDict(void) {
 - (NSDictionary *)searchSongs:(NSDictionary *)args;
 - (NSDictionary *)libraryStats;
 - (NSDictionary *)volumeAction:(NSDictionary *)args;
-- (NSDictionary *)like:(NSDictionary *)args;
+- (NSDictionary *)love:(NSDictionary *)args;
 - (NSDictionary *)finishQueue:(NSArray<MPMediaItem *> *)songs mode:(NSString *)mode
                       matched:(NSString *)matched others:(NSArray<NSString *> *)others;
 @end
@@ -370,13 +370,13 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
     if ([action isEqualToString:@"search"]) return [self searchSongs:args];
     if ([action isEqualToString:@"library"]) return [self libraryStats];
     if ([action isEqualToString:@"volume"]) return [self volumeAction:args];
-    if ([action isEqualToString:@"like"]) return [self like:args];
+    if ([action isEqualToString:@"love"]) return [self love:args];
 
     MRFail(@"unknown action \"%@\"", action);
     return @{};
 }
 
-- (NSDictionary *)like:(NSDictionary *)args {
+- (NSDictionary *)love:(NSDictionary *)args {
     MPMediaItem *item = [MPMusicPlayerController systemMusicPlayer].nowPlayingItem;
     if (item == nil) MRFail(@"nothing is playing");
     NSNumber *pid = [item valueForProperty:MPMediaItemPropertyPersistentID];
@@ -385,19 +385,19 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
     if ([args[@"on"] isKindOfClass:[NSNumber class]]) on = [args[@"on"] boolValue];
     MPMediaLibrary *library = [MPMediaLibrary defaultMediaLibrary];
     if (![library respondsToSelector:@selector(setValues:forProperties:forItemPersistentIDs:)]) {
-        MRFail(@"this iOS version cannot set the liked state");
+        MRFail(@"this iOS version cannot set the loved state");
     }
     // 2 is loved, 0 is clear. Writing the database directly would race
     // medialibraryd, so go through the library object that owns the write.
     // The "changed" pair marks the row for the next iCloud library sync;
-    // without it the like stays local and can be overwritten by the cloud.
+    // without it the love stays local and can be overwritten by the cloud.
     // Dates in this database count seconds from 2001, as integers.
     long long appleNow = (long long)[[NSDate date] timeIntervalSince1970] - 978307200LL;
     [library setValues:@[on ? @2 : @0, @1, @(appleNow)]
           forProperties:@[@"likedState", @"likedStateChanged", @"likedStateChangedDate"]
   forItemPersistentIDs:@[pid]];
     NSMutableDictionary *data = [MRStatusDict() mutableCopy];
-    data[@"liked"] = @(on);
+    data[@"loved"] = @(on);
     data[@"trackID"] = MRIDString(item, MPMediaItemPropertyPersistentID);
     return data;
 }

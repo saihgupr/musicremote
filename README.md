@@ -51,8 +51,13 @@ RC_PASSWORD='<mobile password>' ./deploy.sh iphone
 RC_PASSWORD='<mobile password>' ./deploy.sh ipad
 ```
 
-`deploy.sh` installs the newest `.deb`, then resprings SpringBoard so the dylib
-loads. Use the shared device lock for any install:
+`musicremote` installs into `/usr/bin` (on the device, `/var/jb/usr/bin`), the
+same directory as `rc`. That keeps it on the default PATH, so a bare
+`musicremote` works from non-login shells like Keyboard Maestro's SSH action.
+
+`deploy.sh` installs the newest `.deb`, removes the old copy from
+`/usr/local/bin`, then resprings SpringBoard so the dylib loads. Use the shared
+device lock for any install:
 
 ```sh
 ~/.config/opencode/scripts/device-lock.sh run "MusicRemote deploy" 600 -- ./deploy.sh iphone
@@ -78,9 +83,9 @@ musicremote search "samorost" --limit 5
 musicremote library
 musicremote state                       # one word, for scripts and conditions
 musicremote count songs                 # or albums, artists
-musicremote like                        # love the playing song
-musicremote like off                    # take it back
-musicremote like status                 # liked or not liked
+musicremote love                        # love the playing song
+musicremote love off                    # take it back
+musicremote love status                 # loved or not loved
 musicremote --json status
 ```
 

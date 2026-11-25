@@ -45,6 +45,8 @@ if [ $rc -ne 0 ]; then
     exit $rc
 fi
 
-ssh "$HOST" "printf '%s\n' '$PASSWORD' | sudo -S -p '' killall -9 SpringBoard 2>/dev/null; true"
+# The CLI moved from /usr/local/bin to /usr/bin; drop the old copy so login
+# shells, which search /usr/local/bin first, do not keep running a stale build.
+ssh "$HOST" "printf '%s\n' '$PASSWORD' | sudo -S -p '' rm -f /var/jb/usr/local/bin/musicremote; printf '%s\n' '$PASSWORD' | sudo -S -p '' killall -9 SpringBoard 2>/dev/null; true"
 sleep 7
 echo "installed $DEB on $HOST (resprung)"

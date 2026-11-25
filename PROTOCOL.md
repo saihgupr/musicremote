@@ -43,7 +43,7 @@ CLI can ignore a stale response from an earlier call.
 | `search` | `query`, `limit` | tweak-side, sees only downloaded items |
 | `library` | none | tweak-side counts, sees only downloaded items |
 | `volume` | `value` | 0.0-1.0 |
-| `like` | `on` | loved flag: `true` sets it, `false` clears it |
+| `love` | `on` | loved flag: `true` sets it, `false` clears it |
 
 `mode`: `replace` (default, queues and starts playing), `append` (queues
 without changing playback), `next` (inserts directly after the now playing

@@ -21,7 +21,7 @@ MusicRemote_CFLAGS = -fobjc-arc -Wall -Wextra
 
 TOOL_NAME = musicremote
 musicremote_FILES = cli/main.c
-musicremote_INSTALL_PATH = /usr/local/bin
+musicremote_INSTALL_PATH = /usr/bin
 musicremote_FRAMEWORKS = CoreFoundation
 musicremote_LIBRARIES = sqlite3
 

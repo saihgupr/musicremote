@@ -4,13 +4,13 @@
   "id": "music",
   "name": "MusicRemote",
   "icon": "music.note",
-  "requires": ["/var/jb/usr/local/bin/musicremote"],
+  "requires": ["/var/jb/usr/bin/musicremote"],
   "conditions": [
     {
       "id": "state",
       "name": "Player State",
       "type": "choice",
-      "exec": ["{jbroot}/usr/local/bin/musicremote", "state"],
+      "exec": ["{jbroot}/usr/bin/musicremote", "state"],
       "cache": 5,
       "choices": {
         "playing": "Playing",
@@ -27,55 +27,55 @@
       "command": "play",
       "name": "Play",
       "icon": "play.fill",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "play"] }]
+      "run": [{ "exec": ["{jbroot}/usr/bin/musicremote", "play"] }]
     },
     {
       "command": "pause",
       "name": "Pause",
       "icon": "pause.fill",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "pause"] }]
+      "run": [{ "exec": ["{jbroot}/usr/bin/musicremote", "pause"] }]
     },
     {
       "command": "playpause",
       "name": "Play or Pause",
       "icon": "playpause.fill",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "toggle"] }]
+      "run": [{ "exec": ["{jbroot}/usr/bin/musicremote", "toggle"] }]
     },
     {
       "command": "next",
       "name": "Next Track",
       "icon": "forward.fill",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "next"] }]
+      "run": [{ "exec": ["{jbroot}/usr/bin/musicremote", "next"] }]
     },
     {
       "command": "prev",
       "name": "Previous Track",
       "icon": "backward.fill",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "prev"] }]
+      "run": [{ "exec": ["{jbroot}/usr/bin/musicremote", "prev"] }]
     },
     {
       "command": "queue artist",
       "name": "Queue This Artist",
       "icon": "person.fill",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "queue", "artist"] }]
+      "run": [{ "exec": ["{jbroot}/usr/bin/musicremote", "queue", "artist"] }]
     },
     {
       "command": "queue album",
       "name": "Queue This Album",
       "icon": "music.note",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "queue", "album"] }]
+      "run": [{ "exec": ["{jbroot}/usr/bin/musicremote", "queue", "album"] }]
     },
     {
       "command": "append artist",
       "name": "Add This Artist to Queue",
       "icon": "text.badge.plus",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "queue", "artist", "--append"] }]
+      "run": [{ "exec": ["{jbroot}/usr/bin/musicremote", "queue", "artist", "--append"] }]
     },
     {
       "command": "append album",
       "name": "Add This Album to Queue",
       "icon": "text.badge.plus",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "queue", "album", "--append"] }]
+      "run": [{ "exec": ["{jbroot}/usr/bin/musicremote", "queue", "album", "--append"] }]
     }
   ]
 }

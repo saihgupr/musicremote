@@ -1043,7 +1043,7 @@ static void usage(void) {
 	      "  library\n"
 	      "  state\n"
 	      "  count songs|albums|artists\n"
-	      "  like [on|off|status]\n"
+	      "  love [on|off|status]\n"
 	      "  volume <0.0-1.0>\n"
 	      "  raw '<json object containing \"action\">'\n"
 	      "--json prints the raw response data\n"
@@ -1219,21 +1219,22 @@ static int cmd_count(const char *what, int as_json) {
 	return 0;
 }
 
-/* liked_state in item_stats: 2 is loved, 0 is not. The track id the player
+/* liked_state in item_stats: 2 is loved, 0 is not. The column name is
+ * Apple's; the command and the output say love. The track id the player
  * reports is the same item_pid the database uses. */
-static int db_liked_state(sqlite3 *h, sqlite3_int64 pid) {
+static int db_loved_state(sqlite3 *h, sqlite3_int64 pid) {
 	sqlite3_stmt *st = prepare(h, "SELECT liked_state FROM item_stats WHERE item_pid = ?");
 	sqlite3_bind_int64(st, 1, pid);
-	int liked = -1;
-	if (sqlite3_step(st) == SQLITE_ROW) liked = sqlite3_column_int(st, 0) != 0;
+	int loved = -1;
+	if (sqlite3_step(st) == SQLITE_ROW) loved = sqlite3_column_int(st, 0) != 0;
 	sqlite3_finalize(st);
-	return liked;
+	return loved;
 }
 
-static int cmd_like(int ac, char **av, int as_json) {
+static int cmd_love(int ac, char **av, int as_json) {
 	const char *what = ac > 1 ? av[1] : "on";
 	if (strcmp(what, "on") && strcmp(what, "off") && strcmp(what, "status"))
-		return usage_error("like takes on, off or status");
+		return usage_error("love takes on, off or status");
 
 	request_t sreq = { "status", "{}" };
 	char *status = NULL;
@@ -1247,16 +1248,16 @@ static int cmd_like(int ac, char **av, int as_json) {
 
 	if (!strcmp(what, "status")) {
 		sqlite3 *h = open_db();
-		int liked = db_liked_state(h, pid);
+		int loved = db_loved_state(h, pid);
 		close_db(h);
-		if (liked < 0) local_fail("this track is not in the library");
-		if (as_json) printf("{\"liked\":%s}\n", liked ? "true" : "false");
-		else printf("%s\n", liked ? "liked" : "not liked");
+		if (loved < 0) local_fail("this track is not in the library");
+		if (as_json) printf("{\"loved\":%s}\n", loved ? "true" : "false");
+		else printf("%s\n", loved ? "loved" : "not loved");
 		return 0;
 	}
 
 	int on = !strcmp(what, "on");
-	request_t req = { "like", on ? "{\"on\":true}" : "{\"on\":false}" };
+	request_t req = { "love", on ? "{\"on\":true}" : "{\"on\":false}" };
 	char *data = NULL;
 	rc = exec_request(&req, as_json, &data);
 	if (rc != 0) return rc;
@@ -1265,14 +1266,14 @@ static int cmd_like(int ac, char **av, int as_json) {
 	/* Read back from the library so the answer is what was stored, not what
 	 * was asked for. The player's own cached property does not refresh. */
 	sqlite3 *h = open_db();
-	int liked = db_liked_state(h, pid);
+	int loved = db_loved_state(h, pid);
 	close_db(h);
-	if (liked < 0) local_fail("this track is not in the library");
+	if (loved < 0) local_fail("this track is not in the library");
 	if (as_json) {
-		printf("{\"liked\":%s}\n", liked ? "true" : "false");
+		printf("{\"loved\":%s}\n", loved ? "true" : "false");
 		return 0;
 	}
-	printf("%s  %s", liked ? "liked" : "not liked", np.title);
+	printf("%s  %s", loved ? "loved" : "not loved", np.title);
 	if (np.artist[0]) printf(" - %s", np.artist);
 	putchar('\n');
 	return 0;
@@ -1419,7 +1420,7 @@ int main(int argc, char **argv) {
 	if (!strcmp(av[0], "raw")) return cmd_raw(ac, av, as_json);
 	if (!strcmp(av[0], "state")) return cmd_state(as_json);
 	if (!strcmp(av[0], "count")) return cmd_count(ac > 1 ? av[1] : "", as_json);
-	if (!strcmp(av[0], "like")) return cmd_like(ac, av, as_json);
+	if (!strcmp(av[0], "love")) return cmd_love(ac, av, as_json);
 	if (!strcmp(av[0], "current") || !strcmp(av[0], "queue"))
 		return cmd_current(ac, av, as_json);
 	if (!strcmp(av[0], "library")) {

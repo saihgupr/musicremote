@@ -1041,6 +1041,8 @@ static void usage(void) {
 	      "  queue artist [--next | --append]\n"
 	      "  search <query> [--limit N]\n"
 	      "  library\n"
+	      "  state\n"
+	      "  count songs|albums|artists\n"
 	      "  volume <0.0-1.0>\n"
 	      "  raw '<json object containing \"action\">'\n"
 	      "--json prints the raw response data\n"
@@ -1183,6 +1185,38 @@ static long long playing_store_id(void) {
 	return n > 0 ? one[0] : 0;
 }
 
+/* One word for the add-on's condition, and a number for the count conditions. */
+static int cmd_state(int as_json) {
+	request_t req = { "status", "{}" };
+	char *data = NULL;
+	int rc = exec_request(&req, as_json, &data);
+	if (rc != 0) return rc;
+	now_playing_t np;
+	read_now_playing(data, &np);
+	free(data);
+	if (as_json) printf("{\"state\":\"%s\"}\n", np.state[0] ? np.state : "unknown");
+	else printf("%s\n", np.state[0] ? np.state : "unknown");
+	return 0;
+}
+
+static int cmd_count(const char *what, int as_json) {
+	const char *sql = !strcmp(what, "songs")
+		? "SELECT count(*) FROM item WHERE media_type = 8"
+		: !strcmp(what, "albums") ? "SELECT count(*) FROM album"
+		: !strcmp(what, "artists") ? "SELECT count(*) FROM album_artist" : NULL;
+	if (sql == NULL) return usage_error("count needs songs, albums or artists");
+	sqlite3 *h = open_db();
+	ensure_schema(h);
+	sqlite3_stmt *st = prepare(h, sql);
+	long long n = 0;
+	if (sqlite3_step(st) == SQLITE_ROW) n = sqlite3_column_int64(st, 0);
+	sqlite3_finalize(st);
+	close_db(h);
+	if (as_json) printf("{\"count\":%lld}\n", n);
+	else printf("%lld\n", n);
+	return 0;
+}
+
 enum { CUR_FROM_START = 1, CUR_REST = 2, CUR_APPEND = 4, CUR_NEXT = 8 };
 
 /* queue album|artist turns a status reply into a queueByStore request. The
@@ -1322,6 +1356,8 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 	if (!strcmp(av[0], "raw")) return cmd_raw(ac, av, as_json);
+	if (!strcmp(av[0], "state")) return cmd_state(as_json);
+	if (!strcmp(av[0], "count")) return cmd_count(ac > 1 ? av[1] : "", as_json);
 	if (!strcmp(av[0], "current") || !strcmp(av[0], "queue"))
 		return cmd_current(ac, av, as_json);
 	if (!strcmp(av[0], "library")) {

@@ -5,6 +5,37 @@
   "name": "MusicRemote",
   "icon": "music.note",
   "requires": ["/var/jb/usr/local/bin/musicremote"],
+  "conditions": [
+    {
+      "id": "state",
+      "name": "Player State",
+      "type": "choice",
+      "exec": ["{jbroot}/usr/local/bin/musicremote", "state"],
+      "cache": 5,
+      "choices": {
+        "playing": "Playing",
+        "paused": "Paused",
+        "stopped": "Stopped",
+        "interrupted": "Interrupted",
+        "seeking": "Seeking",
+        "unknown": "Unknown"
+      }
+    },
+    {
+      "id": "songs",
+      "name": "Library Songs",
+      "type": "number",
+      "exec": ["{jbroot}/usr/local/bin/musicremote", "count", "songs"],
+      "cache": 60
+    },
+    {
+      "id": "albums",
+      "name": "Library Albums",
+      "type": "number",
+      "exec": ["{jbroot}/usr/local/bin/musicremote", "count", "albums"],
+      "cache": 60
+    }
+  ],
   "actions": [
     {
       "command": "status",
@@ -35,17 +66,6 @@
       "command": "prev",
       "name": "Previous Track",
       "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "prev"] }]
-    },
-    {
-      "command": "library",
-      "name": "Library Counts",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "library"] }]
-    },
-    {
-      "command": "search",
-      "name": "Search Library",
-      "input": { "title": "Text", "placeholder": "samorost" },
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "search", "{input}"] }]
     },
     {
       "command": "album",

@@ -17,6 +17,12 @@ it: the file is `layout/Library/RemoteCompanion/AddOns/music.json`, installed to
 `/var/jb/Library/RemoteCompanion/AddOns/`, and RemoteCompanion picks it up
 without a respring. `rc addons` lists it as `MusicRemote (music)`.
 
+The add-on exposes the actions that do something (transport, album/artist/song
+queues, volume) and three conditions for the things that only report: player
+state, song count, album count. `library` and `search` stay command-line only,
+because a button that prints a list is not much use on the phone. Check a
+condition with `rc addons check addon:music:state`.
+
 ## Why it is built this way
 
 Inside Music.app the public player API deadlocks: it is the system player's
@@ -68,6 +74,8 @@ musicremote queue artist                # this artist's other tracks, next
 musicremote queue artist --append       # at the end
 musicremote search "samorost" --limit 5
 musicremote library
+musicremote state                       # one word, for scripts and conditions
+musicremote count songs                 # or albums, artists
 musicremote --json status
 ```
 

@@ -1173,7 +1173,7 @@ static void usage(void) {
 	      "  library\n"
 	      "  state\n"
 	      "  count songs|albums|artists\n"
-	      "  love [on|off|status]\n"
+	      "  love [on|off|toggle|status]\n"
 	      "  volume <0.0-1.0>\n"
 	      "  raw '<json object containing \"action\">'\n"
 	      "--json prints the raw response data\n"
@@ -1367,8 +1367,9 @@ static int db_loved_state(sqlite3 *h, sqlite3_int64 pid) {
 
 static int cmd_love(int ac, char **av, int as_json) {
 	const char *what = ac > 1 ? av[1] : "on";
-	if (strcmp(what, "on") && strcmp(what, "off") && strcmp(what, "status"))
-		return usage_error("love takes on, off or status");
+	if (strcmp(what, "on") && strcmp(what, "off") && strcmp(what, "toggle") &&
+	    strcmp(what, "status"))
+		return usage_error("love takes on, off, toggle or status");
 
 	request_t sreq = { "status", "{}" };
 	char *status = NULL;
@@ -1390,6 +1391,13 @@ static int cmd_love(int ac, char **av, int as_json) {
 		return 0;
 	}
 
+	if (!strcmp(what, "toggle")) {
+		sqlite3 *h = open_db();
+		int loved = db_loved_state(h, pid);
+		close_db(h);
+		if (loved < 0) local_fail("this track is not in the library");
+		what = loved ? "off" : "on";
+	}
 	int on = !strcmp(what, "on");
 	request_t req = { "love", on ? "{\"on\":true}" : "{\"on\":false}" };
 	char *data = NULL;

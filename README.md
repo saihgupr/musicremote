@@ -19,11 +19,11 @@ without a respring. `rc addons` lists it as `MusicRemote (music)`.
 
 The add-on is deliberately small, because the phone UI is buttons. It exposes
 play, pause, play or pause, next, previous, queue this artist, queue this album,
-add this artist to the queue and add this album to the queue. One condition,
-player state (Playing / Paused / Stopped), covers automations. Everything else
-(name queues, search, library counts, volume, queue variants) stays in the CLI,
-where it is actually useful. Check the condition with
-`rc addons check addon:music:state`.
+add this artist to the queue, add this album to the queue, and love the playing
+song. One condition, player state (Playing / Paused / Stopped), covers
+automations. Everything else (name queues, search, library counts, volume,
+queue variants) stays in the CLI, where it is actually useful. Check the
+condition with `rc addons check addon:music:state`.
 
 ## Why it is built this way
 
@@ -85,6 +85,7 @@ musicremote state                       # one word, for scripts and conditions
 musicremote count songs                 # or albums, artists
 musicremote love                        # love the playing song
 musicremote love off                    # take it back
+musicremote love toggle                 # flip it
 musicremote love status                 # loved or not loved
 musicremote --json status
 ```
@@ -95,6 +96,7 @@ Through RemoteCompanion, same commands after `rc music`:
 rc music status
 rc music album Kind of Blue
 rc music queue artist
+rc music love
 ```
 
 Quotes are optional. All words after the subcommand form the query, so

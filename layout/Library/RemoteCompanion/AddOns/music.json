@@ -76,6 +76,13 @@
       "name": "Add This Album to Queue",
       "icon": "text.badge.plus",
       "run": [{ "exec": ["{jbroot}/usr/bin/musicremote", "queue", "album", "--append"] }]
+    },
+    {
+      "command": "love",
+      "name": "Love This Song",
+      "icon": "heart.fill",
+      "run": [{ "exec": ["{jbroot}/usr/bin/musicremote", "love", "toggle"] }],
+      "banner": { "title": "Music", "icon": "heart.fill", "subtitle": "Love" }
     }
   ]
 }

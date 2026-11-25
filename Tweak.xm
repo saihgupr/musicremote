@@ -7,7 +7,6 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <MediaPlayer/MediaPlayer.h>
-#import <dlfcn.h>
 #import <stdio.h>
 #import <unistd.h>
 
@@ -133,18 +132,14 @@ static NSArray<MPMediaItem *> *MRSortedSongs(NSArray<MPMediaItem *> *songs) {
         return NSOrderedSame;
     }];
 }
-// MPMusicPlayerController.shuffleMode is read-only for the system player on
-// iOS 15, so ask MediaRemote directly. Resolved at runtime, so a missing symbol
-// just leaves shuffle alone instead of failing the build or the call.
-static void MRForceShuffleOff(void) {
-    typedef void (*MRSetShuffleModeFn)(int);
-    static MRSetShuffleModeFn setShuffle = NULL;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        setShuffle = (MRSetShuffleModeFn)dlsym(RTLD_DEFAULT, "MRMediaRemoteSetShuffleMode");
-        NSLog(@"[MusicRemote] MRMediaRemoteSetShuffleMode %@", setShuffle ? @"found" : @"missing");
-    });
-    if (setShuffle != NULL) setShuffle(0);
+// MPMusicShuffleModeOff is 1, which reads like "on" in raw JSON, so name it.
+static NSString *MRShuffleString(MPMusicShuffleMode mode) {
+    switch (mode) {
+        case MPMusicShuffleModeOff: return @"off";
+        case MPMusicShuffleModeSongs: return @"songs";
+        case MPMusicShuffleModeAlbums: return @"albums";
+        default: return @"default";
+    }
 }
 
 static NSDictionary *MRStatusDict(void) {
@@ -152,7 +147,7 @@ static NSDictionary *MRStatusDict(void) {
     MPMediaItem *item = player.nowPlayingItem;
     NSMutableDictionary *data = [NSMutableDictionary dictionary];
     data[@"state"] = MRStateString(player.playbackState);
-    data[@"shuffle"] = @(player.shuffleMode);
+    data[@"shuffle"] = MRShuffleString(player.shuffleMode);
     data[@"title"] = item ? MRItemString(item, MPMediaItemPropertyTitle) : @"";
     data[@"artist"] = item ? MRItemString(item, MPMediaItemPropertyArtist) : @"";
     data[@"album"] = item ? MRItemString(item, MPMediaItemPropertyAlbumTitle) : @"";
@@ -564,7 +559,6 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
     // Set again after the queue change: setting the queue re-applies the app's
     // own shuffle state, so the earlier assignment is not enough on its own.
     player.shuffleMode = MPMusicShuffleModeOff;
-    MRForceShuffleOff();
 
     NSMutableDictionary *data = [MRStatusDict() mutableCopy];
     data[@"mode"] = mode;

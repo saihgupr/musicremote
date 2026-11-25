@@ -82,7 +82,7 @@ negative SQLite values are reinterpreted as unsigned.
 ```json
 {"state":"playing","title":"So What","artist":"Miles Davis",
  "album":"Kind of Blue","index":1,"total":5,
- "elapsed":12.4,"duration":545.0,
+ "elapsed":12.4,"duration":545.0,"shuffle":"off",
  "albumID":"1421350079176516109","albumArtistID":"4273702906016223495",
  "trackID":"5481794911435167","disc":1,"track":1}
 ```

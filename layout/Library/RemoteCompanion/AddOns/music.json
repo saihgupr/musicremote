@@ -1,0 +1,155 @@
+{
+  "$schema": "../addon.schema.json",
+  "api": 1,
+  "id": "music",
+  "name": "MusicRemote",
+  "icon": "music.note",
+  "requires": ["/var/jb/usr/local/bin/musicremote"],
+  "actions": [
+    {
+      "command": "status",
+      "name": "Now Playing",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "status"] }]
+    },
+    {
+      "command": "play",
+      "name": "Play",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "play"] }]
+    },
+    {
+      "command": "pause",
+      "name": "Pause",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "pause"] }]
+    },
+    {
+      "command": "toggle",
+      "name": "Play or Pause",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "toggle"] }]
+    },
+    {
+      "command": "next",
+      "name": "Next Track",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "next"] }]
+    },
+    {
+      "command": "prev",
+      "name": "Previous Track",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "prev"] }]
+    },
+    {
+      "command": "library",
+      "name": "Library Counts",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "library"] }]
+    },
+    {
+      "command": "search",
+      "name": "Search Library",
+      "input": { "title": "Text", "placeholder": "samorost" },
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "search", "{input}"] }]
+    },
+    {
+      "command": "album",
+      "name": "Queue Album",
+      "input": { "title": "Album", "placeholder": "Kind of Blue" },
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "album", "{input}"] }]
+    },
+    {
+      "command": "album next",
+      "name": "Play Album Next",
+      "input": { "title": "Album", "placeholder": "Kind of Blue" },
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "album", "{input}", "--next"] }]
+    },
+    {
+      "command": "album append",
+      "name": "Add Album to Queue",
+      "input": { "title": "Album", "placeholder": "Kind of Blue" },
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "album", "{input}", "--append"] }]
+    },
+    {
+      "command": "artist",
+      "name": "Queue Artist",
+      "input": { "title": "Artist", "placeholder": "Floex" },
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "artist", "{input}"] }]
+    },
+    {
+      "command": "artist next",
+      "name": "Play Artist Next",
+      "input": { "title": "Artist", "placeholder": "Floex" },
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "artist", "{input}", "--next"] }]
+    },
+    {
+      "command": "artist append",
+      "name": "Add Artist to Queue",
+      "input": { "title": "Artist", "placeholder": "Floex" },
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "artist", "{input}", "--append"] }]
+    },
+    {
+      "command": "song",
+      "name": "Queue Song",
+      "input": { "title": "Song", "placeholder": "Mushroom Picker Dance" },
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "song", "{input}"] }]
+    },
+    {
+      "command": "current album",
+      "name": "Replay This Album",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "album"] }]
+    },
+    {
+      "command": "current album next",
+      "name": "Rest of Album After This Song",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "album", "--next"] }]
+    },
+    {
+      "command": "current album rest",
+      "name": "Append Rest of Album",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "album", "--rest"] }]
+    },
+    {
+      "command": "current album append",
+      "name": "Add Album to Queue",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "album", "--append"] }]
+    },
+    {
+      "command": "current album from-start",
+      "name": "Replay Album From Track 1",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "album", "--from-start"] }]
+    },
+    {
+      "command": "current artist",
+      "name": "Play This Artist",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "artist"] }]
+    },
+    {
+      "command": "current artist next",
+      "name": "Rest of Artist After This Song",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "artist", "--next"] }]
+    },
+    {
+      "command": "current artist append",
+      "name": "Add Artist to Queue",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "artist", "--append"] }]
+    },
+    {
+      "command": "route list",
+      "name": "List AirPlay Targets",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "route", "list"] }]
+    },
+    {
+      "command": "route set",
+      "name": "Send Audio To",
+      "input": { "title": "Target", "placeholder": "Bedroom" },
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "route", "set", "{input}"] }]
+    },
+    {
+      "command": "route off",
+      "name": "Back To This Device",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "route", "off"] }]
+    },
+    {
+      "command": "volume",
+      "name": "Set Volume",
+      "input": { "title": "Level", "placeholder": "0.5", "number": true },
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "volume", "{input}"] }]
+    }
+  ]
+}

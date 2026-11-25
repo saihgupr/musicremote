@@ -35,7 +35,7 @@
 #define LOCK_WAIT_MS    2000
 #define POLL_MS         50
 #define ATTEMPT_MS      3000
-#define MAX_ATTEMPTS    5
+#define MAX_ATTEMPTS    3
 #define DEFAULT_LIMIT   20
 #define SEARCH_MAX      50
 #define MAX_QUERY       400

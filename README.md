@@ -11,7 +11,11 @@ Two pieces, one package:
 - `musicremote` is a small CLI on the device that resolves names against the
   iTunes library database and sends the request.
 
-`rc music ...` (RemoteCompanion) forwards to the same CLI.
+`rc music ...` (RemoteCompanion) runs the same CLI through a **RemoteCompanion
+add-on** that ships in this package. RemoteCompanion needs no code changes for
+it: the file is `layout/Library/RemoteCompanion/AddOns/music.json`, installed to
+`/var/jb/Library/RemoteCompanion/AddOns/`, and RemoteCompanion picks it up
+without a respring. `rc addons` lists it as `MusicRemote (music)`.
 
 ## Why it is built this way
 

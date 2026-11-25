@@ -17,11 +17,13 @@ it: the file is `layout/Library/RemoteCompanion/AddOns/music.json`, installed to
 `/var/jb/Library/RemoteCompanion/AddOns/`, and RemoteCompanion picks it up
 without a respring. `rc addons` lists it as `MusicRemote (music)`.
 
-The add-on exposes the actions that do something (transport, album/artist/song
-queues, volume) and three conditions for the things that only report: player
-state, song count, album count. `library` and `search` stay command-line only,
-because a button that prints a list is not much use on the phone. Check a
-condition with `rc addons check addon:music:state`.
+The add-on is deliberately small, because the phone UI is buttons. It exposes
+play, pause, play or pause, next, previous, queue this artist, queue this album,
+add this artist to the queue and add this album to the queue. One condition,
+player state (Playing / Paused / Stopped), covers automations. Everything else
+(name queues, search, library counts, volume, queue variants) stays in the CLI,
+where it is actually useful. Check the condition with
+`rc addons check addon:music:state`.
 
 ## Why it is built this way
 

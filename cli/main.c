@@ -9,7 +9,7 @@
  * Album, artist and song names are resolved in MediaLibrary.sqlitedb (opened
  * read-only) and queued as Apple Music catalog IDs through queueByStore, with
  * a queueByID fallback when a track has no store ID. library and search read
- * the same database; current album/artist take their IDs from a status reply.
+ * the same database; queue album/artist take their IDs from a status reply.
  */
 
 #include <CoreFoundation/CoreFoundation.h>
@@ -1071,8 +1071,8 @@ static void usage(void) {
 	      "  play | pause | toggle | next | prev\n"
 	      "  album|artist <query> [--replace|--append|--next]\n"
 	      "  song <query> [--artist <name>] [--replace|--append|--next]\n"
-	      "  current album [--from-start | --rest | --next | --append]\n"
-	      "  current artist [--next | --append]\n"
+	      "  queue album [--next | --rest | --append | --from-start]\n"
+	      "  queue artist [--next | --append]\n"
 	      "  search <query> [--limit N]\n"
 	      "  library\n"
 	      "  volume <0.0-1.0>\n"
@@ -1231,12 +1231,13 @@ static long long playing_store_id(void) {
 
 enum { CUR_FROM_START = 1, CUR_REST = 2, CUR_APPEND = 4, CUR_NEXT = 8 };
 
-/* current album|artist turns a status reply into a queueByStore request. The
+/* queue album|artist turns a status reply into a queueByStore request. The
  * track list comes from the same database resolution as the name commands, so
- * the queue matches the library's own album/artist and play order. */
+ * the queue matches the library's own album/artist and play order. `current`
+ * is kept as an alias. */
 static int cmd_current(int ac, char **av, int as_json) {
 	if (ac < 2 || (strcmp(av[1], "album") && strcmp(av[1], "artist")))
-		return usage_error("current needs album or artist");
+		return usage_error("queue needs album or artist");
 	const char *what = av[1];
 	int is_album = !strcmp(what, "album");
 	int flags = 0;
@@ -1247,15 +1248,18 @@ static int cmd_current(int ac, char **av, int as_json) {
 		        : !strcmp(av[i], "--next") ? CUR_NEXT : 0;
 		if (!bit)
 			return usage_error(is_album
-			                   ? "current album takes --from-start, --rest, --append or --next"
-			                   : "current artist takes only --append or --next");
+			                   ? "queue album takes --next, --rest, --append or --from-start"
+			                   : "queue artist takes only --append or --next");
 		if (!is_album && (bit == CUR_FROM_START || bit == CUR_REST))
-			return usage_error("current artist takes only --append or --next");
+			return usage_error("queue artist takes only --append or --next");
 		if (flags & bit) return usage_error("duplicate flag");
 		flags |= bit;
 	}
 	if (flags && (flags & (flags - 1)))
 		return usage_error("pick one of --from-start, --rest, --append or --next");
+	/* queue album|artist plays the rest of it next, which is what "queue"
+	 * means. Only an explicit flag changes that. */
+	if (flags == 0) flags = CUR_NEXT;
 
 	request_t sreq = { "status", "{}" };
 	char *status = NULL;
@@ -1365,7 +1369,8 @@ int main(int argc, char **argv) {
 	}
 	if (!strcmp(av[0], "route")) return cmd_route(ac, av);
 	if (!strcmp(av[0], "raw")) return cmd_raw(ac, av, as_json);
-	if (!strcmp(av[0], "current")) return cmd_current(ac, av, as_json);
+	if (!strcmp(av[0], "current") || !strcmp(av[0], "queue"))
+		return cmd_current(ac, av, as_json);
 	if (!strcmp(av[0], "library")) {
 		if (ac != 1) return usage_error("this command takes no arguments");
 		return cmd_library(as_json);

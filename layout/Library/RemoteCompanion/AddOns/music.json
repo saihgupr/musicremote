@@ -90,44 +90,34 @@
       "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "song", "{input}"] }]
     },
     {
-      "command": "current album",
-      "name": "Replay This Album",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "album"] }]
+      "command": "queue album",
+      "name": "Play This Album Next",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "queue", "album"] }]
     },
     {
-      "command": "current album next",
-      "name": "Rest of Album After This Song",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "album", "--next"] }]
+      "command": "queue album append",
+      "name": "Add This Album to Queue",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "queue", "album", "--append"] }]
     },
     {
-      "command": "current album rest",
-      "name": "Append Rest of Album",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "album", "--rest"] }]
+      "command": "queue album rest",
+      "name": "Append Rest of This Album",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "queue", "album", "--rest"] }]
     },
     {
-      "command": "current album append",
-      "name": "Add Album to Queue",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "album", "--append"] }]
+      "command": "queue album from-start",
+      "name": "Replay This Album From Track 1",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "queue", "album", "--from-start"] }]
     },
     {
-      "command": "current album from-start",
-      "name": "Replay Album From Track 1",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "album", "--from-start"] }]
+      "command": "queue artist",
+      "name": "Play This Artist Next",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "queue", "artist"] }]
     },
     {
-      "command": "current artist",
-      "name": "Play This Artist",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "artist"] }]
-    },
-    {
-      "command": "current artist next",
-      "name": "Rest of Artist After This Song",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "artist", "--next"] }]
-    },
-    {
-      "command": "current artist append",
-      "name": "Add Artist to Queue",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "current", "artist", "--append"] }]
+      "command": "queue artist append",
+      "name": "Add This Artist to Queue",
+      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "queue", "artist", "--append"] }]
     },
     {
       "command": "route list",

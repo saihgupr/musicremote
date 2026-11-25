@@ -1,8 +1,9 @@
 // MusicRemote v0.1. A JSON bridge injected into Music.app. It reads one
 // request file, drives MPMusicPlayerController's system player, and writes
 // one response file. Darwin notifications signal both directions. The wire
-// contract (paths, actions, response fields) lives in PROTOCOL.md. Public
-// MediaPlayer API only, no private frameworks.
+// contract (paths, actions, response fields) lives in PROTOCOL.md. MediaPlayer
+// only; the one private call is MPMediaLibrary's liked-state setter, since the
+// SDK has no public way to set it.
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -21,6 +22,13 @@ static NSString *const kMusicRemoteResponseNote = @"com.chris.musicremote.res";
 @interface MPMusicPlayerController (MusicRemoteLegacy)
 @property (nonatomic, readonly) NSUInteger numberOfItems;
 @property (nonatomic, readonly) NSTimeInterval playbackDuration;
+@end
+
+@interface MPMediaLibrary (MusicRemoteLegacy)
+// No public API sets the loved flag; this is the private model-layer setter the
+// Music app itself goes through. Guarded by respondsToSelector before use.
+- (void)setValues:(NSArray *)values forProperties:(NSArray *)properties
+    forItemPersistentIDs:(NSArray *)persistentIDs;
 @end
 
 // Lowercase, fold diacritics and width, collapse whitespace, trim.
@@ -195,6 +203,7 @@ static NSDictionary *MRStatusDict(void) {
 - (NSDictionary *)searchSongs:(NSDictionary *)args;
 - (NSDictionary *)libraryStats;
 - (NSDictionary *)volumeAction:(NSDictionary *)args;
+- (NSDictionary *)like:(NSDictionary *)args;
 - (NSDictionary *)finishQueue:(NSArray<MPMediaItem *> *)songs mode:(NSString *)mode
                       matched:(NSString *)matched others:(NSArray<NSString *> *)others;
 @end
@@ -361,9 +370,32 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
     if ([action isEqualToString:@"search"]) return [self searchSongs:args];
     if ([action isEqualToString:@"library"]) return [self libraryStats];
     if ([action isEqualToString:@"volume"]) return [self volumeAction:args];
+    if ([action isEqualToString:@"like"]) return [self like:args];
 
     MRFail(@"unknown action \"%@\"", action);
     return @{};
+}
+
+- (NSDictionary *)like:(NSDictionary *)args {
+    MPMediaItem *item = [MPMusicPlayerController systemMusicPlayer].nowPlayingItem;
+    if (item == nil) MRFail(@"nothing is playing");
+    NSNumber *pid = [item valueForProperty:MPMediaItemPropertyPersistentID];
+    if (![pid isKindOfClass:[NSNumber class]]) MRFail(@"no track id for the playing song");
+    BOOL on = YES;
+    if ([args[@"on"] isKindOfClass:[NSNumber class]]) on = [args[@"on"] boolValue];
+    MPMediaLibrary *library = [MPMediaLibrary defaultMediaLibrary];
+    if (![library respondsToSelector:@selector(setValues:forProperties:forItemPersistentIDs:)]) {
+        MRFail(@"this iOS version cannot set the liked state");
+    }
+    // 2 is loved, 0 is clear. Writing the database directly would race
+    // medialibraryd, so go through the library object that owns the write.
+    [library setValues:@[on ? @2 : @0]
+          forProperties:@[@"likedState"]
+  forItemPersistentIDs:@[pid]];
+    NSMutableDictionary *data = [MRStatusDict() mutableCopy];
+    data[@"liked"] = @(on);
+    data[@"trackID"] = MRIDString(item, MPMediaItemPropertyPersistentID);
+    return data;
 }
 
 - (NSDictionary *)queueAlbum:(NSDictionary *)args {

@@ -78,6 +78,9 @@ musicremote search "samorost" --limit 5
 musicremote library
 musicremote state                       # one word, for scripts and conditions
 musicremote count songs                 # or albums, artists
+musicremote like                        # love the playing song
+musicremote like off                    # take it back
+musicremote like status                 # liked or not liked
 musicremote --json status
 ```
 

@@ -1043,6 +1043,7 @@ static void usage(void) {
 	      "  library\n"
 	      "  state\n"
 	      "  count songs|albums|artists\n"
+	      "  like [on|off|status]\n"
 	      "  volume <0.0-1.0>\n"
 	      "  raw '<json object containing \"action\">'\n"
 	      "--json prints the raw response data\n"
@@ -1151,13 +1152,14 @@ static int cmd_raw(int ac, char **av, int as_json) {
 /* ---------- current ---------- */
 
 typedef struct {
-	char state[32], album[256], artist[256];
+	char state[32], title[256], album[256], artist[256];
 	char album_id[24], album_artist_id[24], track_id[24];
 } now_playing_t;
 
 static void read_now_playing(const char *data, now_playing_t *np) {
 	memset(np, 0, sizeof *np);
 	json_str(data, "state", np->state, sizeof np->state);
+	json_str(data, "title", np->title, sizeof np->title);
 	json_str(data, "album", np->album, sizeof np->album);
 	json_str(data, "artist", np->artist, sizeof np->artist);
 	json_str(data, "albumID", np->album_id, sizeof np->album_id);
@@ -1214,6 +1216,65 @@ static int cmd_count(const char *what, int as_json) {
 	close_db(h);
 	if (as_json) printf("{\"count\":%lld}\n", n);
 	else printf("%lld\n", n);
+	return 0;
+}
+
+/* liked_state in item_stats: 2 is loved, 0 is not. The track id the player
+ * reports is the same item_pid the database uses. */
+static int db_liked_state(sqlite3 *h, sqlite3_int64 pid) {
+	sqlite3_stmt *st = prepare(h, "SELECT liked_state FROM item_stats WHERE item_pid = ?");
+	sqlite3_bind_int64(st, 1, pid);
+	int liked = -1;
+	if (sqlite3_step(st) == SQLITE_ROW) liked = sqlite3_column_int(st, 0) != 0;
+	sqlite3_finalize(st);
+	return liked;
+}
+
+static int cmd_like(int ac, char **av, int as_json) {
+	const char *what = ac > 1 ? av[1] : "on";
+	if (strcmp(what, "on") && strcmp(what, "off") && strcmp(what, "status"))
+		return usage_error("like takes on, off or status");
+
+	request_t sreq = { "status", "{}" };
+	char *status = NULL;
+	int rc = exec_request(&sreq, 0, &status);
+	if (rc != 0) return rc;
+	now_playing_t np;
+	read_now_playing(status, &np);
+	free(status);
+	if (!np.track_id[0]) local_fail("nothing is playing");
+	sqlite3_int64 pid = parse_pid(np.track_id);
+
+	if (!strcmp(what, "status")) {
+		sqlite3 *h = open_db();
+		int liked = db_liked_state(h, pid);
+		close_db(h);
+		if (liked < 0) local_fail("this track is not in the library");
+		if (as_json) printf("{\"liked\":%s}\n", liked ? "true" : "false");
+		else printf("%s\n", liked ? "liked" : "not liked");
+		return 0;
+	}
+
+	int on = !strcmp(what, "on");
+	request_t req = { "like", on ? "{\"on\":true}" : "{\"on\":false}" };
+	char *data = NULL;
+	rc = exec_request(&req, as_json, &data);
+	if (rc != 0) return rc;
+	free(data);
+
+	/* Read back from the library so the answer is what was stored, not what
+	 * was asked for. The player's own cached property does not refresh. */
+	sqlite3 *h = open_db();
+	int liked = db_liked_state(h, pid);
+	close_db(h);
+	if (liked < 0) local_fail("this track is not in the library");
+	if (as_json) {
+		printf("{\"liked\":%s}\n", liked ? "true" : "false");
+		return 0;
+	}
+	printf("%s  %s", liked ? "liked" : "not liked", np.title);
+	if (np.artist[0]) printf(" - %s", np.artist);
+	putchar('\n');
 	return 0;
 }
 
@@ -1358,6 +1419,7 @@ int main(int argc, char **argv) {
 	if (!strcmp(av[0], "raw")) return cmd_raw(ac, av, as_json);
 	if (!strcmp(av[0], "state")) return cmd_state(as_json);
 	if (!strcmp(av[0], "count")) return cmd_count(ac > 1 ? av[1] : "", as_json);
+	if (!strcmp(av[0], "like")) return cmd_like(ac, av, as_json);
 	if (!strcmp(av[0], "current") || !strcmp(av[0], "queue"))
 		return cmd_current(ac, av, as_json);
 	if (!strcmp(av[0], "library")) {

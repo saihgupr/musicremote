@@ -1509,12 +1509,19 @@ static int cmd_current(int ac, char **av, int as_json) {
 		send_n = n - track_index - 1;
 		mode = "append";
 	} else if (flags & CUR_NEXT) {
-		/* Insert after the now playing item, so it starts when this song ends. */
-		if (track_index < 0 || track_index + 1 >= n)
-			local_fail("nothing after this track");
-		send_ids = ids + track_index + 1;
-		send_n = n - track_index - 1;
+		/* The whole album, in album order, with the playing song left out so
+		 * it is not heard twice. It starts when this song ends. --rest is the
+		 * flag for "only the tracks after this one". */
 		mode = "next";
+		if (track_index >= 0) {
+			int kept = 0;
+			for (int i = 0; i < n; i++)
+				if (i != track_index) ids[kept++] = ids[i];
+			n = kept;
+			send_n = n;
+			if (send_n == 0)
+				local_fail("that track is the only one and it is already playing");
+		}
 	} else if (flags & CUR_APPEND) {
 		mode = "append";
 		/* Keep the playing track out of the appended copy. */

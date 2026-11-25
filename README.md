@@ -100,9 +100,11 @@ rc music queue artist
 Quotes are optional. All words after the subcommand form the query, so
 `album Kind of Blue` and `album "Kind of Blue"` are the same.
 
-`queue album` and `queue artist` insert after the current song by default and
-leave that song out, so nothing is heard twice. `--append` puts them at the end
-instead.
+`queue album` queues the whole album in album order, leaving the playing song
+out so nothing is heard twice, and starts it when the current song ends.
+`--rest` is the narrower one: only the tracks after the current song.
+`--append` puts the album at the end instead, and `--from-start` replaces the
+queue and starts at track 1.
 
 An album is resolved through Apple's public iTunes lookup, not just the local
 library, so an album with only a few songs added still plays end to end. That

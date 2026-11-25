@@ -99,9 +99,10 @@ track that is not in the library; that is what the album lookup uses.
 The CLI turns a `status` response into one of these (`current` still works as
 an alias for `queue`):
 
-- `queue album` inserts the rest of the playing album after the current track.
-- `queue album --rest` appends only the tracks after the current one.
-- `queue album --next` is the default, same as above.
+- `queue album` inserts the whole album after the current track, in album
+  order, with the playing track left out.
+- `queue album --rest` inserts only the tracks after the current one.
+- `queue album --next` is the default, same as the first.
 - `queue album --append` appends the whole album, playback untouched.
 - `queue album --from-start` replaces the queue, starting at track 1.
 - `queue artist` replaces the queue with every track by the album artist,

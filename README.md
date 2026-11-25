@@ -1,6 +1,4 @@
-<img src="images/Icon.png" width="96" align="left" alt="MusicRemote icon" />
-
-# MusicRemote
+# <sup><img src="images/Icon.png" width="48" height="48" align="middle" alt="MusicRemote" /></sup> MusicRemote
 
 Drive the iOS 15 Music app from the command line: queue an album or an artist,
 play, pause, skip, and report what is playing.

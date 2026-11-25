@@ -61,16 +61,13 @@ musicremote album Samorost 3
 musicremote album "Best of Martin Denny's Exotica" --append
 musicremote artist "Rabih Abou-Khalil"
 musicremote song "Remembering Machghara"
-musicremote current album               # album of the playing track, from that track
-musicremote current album --rest        # only the tracks after it
-musicremote current album --next        # play the rest when this song ends
-musicremote current album --from-start  # whole album from track 1
-musicremote current album --append      # add it without interrupting
-musicremote current artist              # everything by the album artist
+musicremote queue album                 # rest of the playing album, plays next
+musicremote queue album --append        # rest of the album, at the end
+musicremote queue album --from-start    # replace the queue, from track 1
+musicremote queue artist                # this artist's other tracks, next
+musicremote queue artist --append       # at the end
 musicremote search "samorost" --limit 5
 musicremote library
-musicremote route list
-musicremote route set Bedroom
 musicremote --json status
 ```
 
@@ -79,13 +76,15 @@ Through RemoteCompanion, same commands after `rc music`:
 ```sh
 rc music status
 rc music album Kind of Blue
-rc music route set bedroom
+rc music queue artist
 ```
 
 Quotes are optional. All words after the subcommand form the query, so
 `album Kind of Blue` and `album "Kind of Blue"` are the same.
 
-`--append` adds to the queue. `--next` is reserved and returns an error.
+`queue album` and `queue artist` insert after the current song by default and
+leave that song out, so nothing is heard twice. `--append` puts them at the end
+instead.
 
 ## Limits
 

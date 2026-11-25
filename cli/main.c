@@ -16,7 +16,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <spawn.h>
 #include <sqlite3.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -26,7 +25,6 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #define DIR_PATH        "/var/mobile/Media/.musicremote"
@@ -44,8 +42,6 @@
 #define SUGGEST_MAX     5
 #define MAX_SQL         1536
 #define MAX_FILE_BYTES  (1 << 20)
-
-extern char **environ;
 
 enum { RESP_NONE = 0, RESP_OK, RESP_ERR };
 
@@ -357,36 +353,6 @@ static int poll_response(const char *id, char **data, char **error, int timeout_
 		usleep(POLL_MS * 1000);
 	}
 	return RESP_NONE;
-}
-
-static void ensure_jb_path(void) {
-	const char *old = getenv("PATH");
-	if (old && strstr(old, "/var/jb/usr/local/bin") && strstr(old, "/var/jb/usr/bin")) return;
-	char np[PATH_MAX];
-	snprintf(np, sizeof np, "/var/jb/usr/local/bin:/var/jb/usr/bin:%s",
-	         old ? old : "/usr/bin:/bin");
-	setenv("PATH", np, 1);
-}
-
-static int run_rc(char *const argv[]) {
-	ensure_jb_path();
-	/* rc is a bash script starting with #!/bin/bash, and /bin/bash does not
-	   exist on a rootless device, so name the interpreter explicitly. */
-	char *wrapped[64];
-	int n = 0;
-	wrapped[n++] = (char *)"bash";
-	wrapped[n++] = (char *)"/var/jb/usr/bin/rc";
-	for (int i = 1; argv[i] != NULL && n < 62; i++) wrapped[n++] = argv[i];
-	wrapped[n] = NULL;
-
-	pid_t pid;
-	int st = 0;
-	int r = posix_spawnp(&pid, "/var/jb/usr/bin/bash", NULL, NULL, wrapped, environ);
-	if (r != 0) r = posix_spawnp(&pid, "rc", NULL, NULL, argv, environ);
-	if (r == ENOENT) { fputs("rc not found (RemoteCompanion CLI)\n", stderr); return 127; }
-	if (r != 0) { fprintf(stderr, "cannot run rc: %s\n", strerror(r)); return 1; }
-	if (waitpid(pid, &st, 0) < 0 || !WIFEXITED(st)) return 1;
-	return WEXITSTATUS(st);
 }
 
 /* ---------- human output ---------- */
@@ -1076,7 +1042,6 @@ static void usage(void) {
 	      "  search <query> [--limit N]\n"
 	      "  library\n"
 	      "  volume <0.0-1.0>\n"
-	      "  route list | route set <name> | route off\n"
 	      "  raw '<json object containing \"action\">'\n"
 	      "--json prints the raw response data\n"
 	      "MUSICREMOTE_DIR and MUSICREMOTE_DB override the paths (testing)\n", stderr);
@@ -1167,17 +1132,6 @@ static int run_request(const request_t *req, int as_json) {
 	else print_data(req->action, data);
 	free(data);
 	return 0;
-}
-
-static int cmd_route(int ac, char **av) {
-	const char *v = ac > 1 ? av[1] : "";
-	if (!strcmp(v, "list")) { char *a[] = { "rc", "airplay", "list", NULL }; return run_rc(a); }
-	if (!strcmp(v, "off")) { char *a[] = { "rc", "airplay", "disconnect", NULL }; return run_rc(a); }
-	if (!strcmp(v, "set") && ac > 2) {
-		char *a[] = { "rc", "airplay", "connect", av[2], NULL };
-		return run_rc(a);
-	}
-	return usage_error("route needs list, set <name> or off");
 }
 
 static int cmd_raw(int ac, char **av, int as_json) {
@@ -1367,7 +1321,6 @@ int main(int argc, char **argv) {
 		usage();
 		return 0;
 	}
-	if (!strcmp(av[0], "route")) return cmd_route(ac, av);
 	if (!strcmp(av[0], "raw")) return cmd_raw(ac, av, as_json);
 	if (!strcmp(av[0], "current") || !strcmp(av[0], "queue"))
 		return cmd_current(ac, av, as_json);

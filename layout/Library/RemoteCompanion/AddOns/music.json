@@ -120,22 +120,6 @@
       "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "queue", "artist", "--append"] }]
     },
     {
-      "command": "route list",
-      "name": "List AirPlay Targets",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "route", "list"] }]
-    },
-    {
-      "command": "route set",
-      "name": "Send Audio To",
-      "input": { "title": "Target", "placeholder": "Bedroom" },
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "route", "set", "{input}"] }]
-    },
-    {
-      "command": "route off",
-      "name": "Back To This Device",
-      "run": [{ "exec": ["{jbroot}/usr/local/bin/musicremote", "route", "off"] }]
-    },
-    {
       "command": "volume",
       "name": "Set Volume",
       "input": { "title": "Level", "placeholder": "0.5", "number": true },

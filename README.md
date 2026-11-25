@@ -1,3 +1,5 @@
+<img src="images/Icon.png" width="96" align="left" alt="MusicRemote icon" />
+
 # MusicRemote
 
 Drive the iOS 15 Music app from the command line: queue an album or an artist,

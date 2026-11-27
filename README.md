@@ -1,6 +1,6 @@
 # <sup><img src="images/Icon.png" width="48" height="48" align="middle" alt="MusicRemote" /></sup> MusicRemote
 
-Drive the iOS 15 Music app from the command line: queue an album or an artist,
+Drive the iOS Music app from the command line: queue an album or an artist,
 play, pause, skip, and report what is playing.
 
 Two pieces, one package:
@@ -31,7 +31,7 @@ catalog IDs (`subscription_store_item_id`). That plays cloud items too.
 
 ## Requirements
 
-- Jailbroken (Dopamine) rootless iOS 15 device, ElleKit injection
+- Jailbroken rootless iOS 15+ device with ElleKit injection (tested on iOS 15 with Dopamine; iOS 16+ is untested — testers welcome, please open an issue with your iOS version and results, especially for `love` and queue commands)
 - Theos at `/opt/theos` to build
 - RemoteCompanion installed if you want `rc music`
 

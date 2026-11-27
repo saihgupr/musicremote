@@ -2,7 +2,7 @@ Package: com.saihgupr.musicremote
 Name: MusicRemote
 Version: 1.0.0
 Architecture: iphoneos-arm64
-Description: Drives the iOS 15 Music app queue from a CLI. Queue an album or artist, play, pause, skip, report now playing.
+Description: Drives the iOS Music app queue from a CLI. Queue an album or artist, play, pause, skip, report now playing.
 Maintainer: saihgupr
 Author: saihgupr
 Section: Tweaks

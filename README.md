@@ -29,7 +29,8 @@ stays in the CLI, where it is actually useful. Check the condition with
 
 <p>
   <img src="images/cli.png" width="560" alt="musicremote CLI" />
-  <img src="images/addon.png" width="240" alt="MusicRemote RemoteCompanion add-on" />
+  <img src="images/addon-1.png" width="240" alt="MusicRemote RemoteCompanion add-on settings" />
+  <img src="images/addon-2.jpg" width="240" alt="MusicRemote RemoteCompanion add-on actions" />
 </p>
 
 ## Why it is built this way

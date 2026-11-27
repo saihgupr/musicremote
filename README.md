@@ -25,6 +25,10 @@ automations. Everything else (name queues, search, library counts, volume,
 queue variants) stays in the CLI, where it is actually useful. Check the
 condition with `rc addons check addon:music:state`.
 
+<p>
+  <img src="images/addon.png" width="240" alt="MusicRemote RemoteCompanion add-on" />
+</p>
+
 ## Why it is built this way
 
 Inside Music.app the public player API deadlocks: it is the system player's

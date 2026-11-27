@@ -26,6 +26,7 @@ queue variants) stays in the CLI, where it is actually useful. Check the
 condition with `rc addons check addon:music:state`.
 
 <p>
+  <img src="images/cli.png" width="560" alt="musicremote CLI" />
   <img src="images/addon.png" width="240" alt="MusicRemote RemoteCompanion add-on" />
 </p>
 

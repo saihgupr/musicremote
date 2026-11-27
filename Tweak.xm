@@ -14,8 +14,8 @@
 static NSString *const kMusicRemoteDirectory = @"/var/mobile/Media/.musicremote";
 static NSString *const kMusicRemoteRequestPath = @"/var/mobile/Media/.musicremote/req.json";
 static NSString *const kMusicRemoteResponsePath = @"/var/mobile/Media/.musicremote/res.json";
-static NSString *const kMusicRemoteRequestNote = @"com.chris.musicremote.req";
-static NSString *const kMusicRemoteResponseNote = @"com.chris.musicremote.res";
+static NSString *const kMusicRemoteRequestNote = @"com.saihgupr.musicremote.req";
+static NSString *const kMusicRemoteResponseNote = @"com.saihgupr.musicremote.res";
 
 // Not in the iOS 16 SDK headers, but present on iOS 15. The
 // respondsToSelector() checks below keep a missing one from crashing.
@@ -230,7 +230,7 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
         bridge = [[MRBridge alloc] init];
         // All player calls run here, never on Music.app's main thread: calling
         // the system player from the main thread deadlocks against the app.
-        bridge.workQueue = dispatch_queue_create("com.chris.musicremote.work", DISPATCH_QUEUE_SERIAL);
+        bridge.workQueue = dispatch_queue_create("com.saihgupr.musicremote.work", DISPATCH_QUEUE_SERIAL);
     });
     return bridge;
 }

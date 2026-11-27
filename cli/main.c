@@ -1,7 +1,7 @@
 /*
  * musicremote sends one command to Music.app through the MusicRemote tweak:
  * write req.json {"id","action","args"} (tmp+fsync+rename), post the Darwin
- * notification com.chris.musicremote.req, poll res.json every 50 ms for 3 s
+ * notification com.saihgupr.musicremote.req, poll res.json every 50 ms for 3 s
  * for a response carrying our id. An exclusive flock serialises calls;
  * req.json is removed on exit, res.json is left for the next call to overwrite.
  * No answer after one retry (launching Music.app): exit 2.
@@ -33,7 +33,7 @@ extern char **environ;
 
 #define DIR_PATH        "/var/mobile/Media/.musicremote"
 #define DB_PATH         "/var/mobile/Media/iTunes_Control/iTunes/MediaLibrary.sqlitedb"
-#define NOTIFY_REQ      "com.chris.musicremote.req"
+#define NOTIFY_REQ      "com.saihgupr.musicremote.req"
 #define LOCK_WAIT_MS    2000
 #define POLL_MS         50
 #define ATTEMPT_MS      3000

@@ -11,7 +11,7 @@ Two pieces, one package:
 - `musicremote` is a small CLI on the device that resolves names against the
   iTunes library database and sends the request.
 
-`rc music ...` (RemoteCompanion) runs the same CLI through a **RemoteCompanion
+`rc music ...` ([RemoteCompanion](https://github.com/saihgupr/remotecompanion)) runs the same CLI through a **RemoteCompanion
 add-on** that ships in this package. RemoteCompanion needs no code changes for
 it: the file is `layout/Library/RemoteCompanion/AddOns/music.json`, installed to
 `/var/jb/Library/RemoteCompanion/AddOns/`, and RemoteCompanion picks it up
@@ -43,7 +43,16 @@ catalog IDs (`subscription_store_item_id`). That plays cloud items too.
 - Theos at `/opt/theos` to build
 - RemoteCompanion installed if you want `rc music`
 
-## Build and install
+## Install
+
+Download the `.deb` from [Releases](https://github.com/saihgupr/musicremote/releases) and install it with Sileo, Zebra, Filza, or over SSH:
+
+```sh
+sudo dpkg -i com.saihgupr.musicremote_1.0.0_iphoneos-arm64.deb
+sudo killall -9 SpringBoard
+```
+
+## Build from source
 
 ```sh
 THEOS=/opt/theos make package
@@ -55,13 +64,8 @@ RC_PASSWORD='<mobile password>' ./deploy.sh ipad
 same directory as `rc`. That keeps it on the default PATH, so a bare
 `musicremote` works from non-login shells like Keyboard Maestro's SSH action.
 
-`deploy.sh` installs the newest `.deb`, removes the old copy from
-`/usr/local/bin`, then resprings SpringBoard so the dylib loads. Use the shared
-device lock for any install:
-
-```sh
-~/.config/opencode/scripts/device-lock.sh run "MusicRemote deploy" 600 -- ./deploy.sh iphone
-```
+`deploy.sh` installs the newest `.deb`, removes any old copy from
+`/usr/local/bin`, and resprings SpringBoard so the dylib loads.
 
 ## Usage
 
@@ -90,12 +94,13 @@ musicremote love status                 # loved or not loved
 musicremote --json status
 ```
 
-Through RemoteCompanion, same commands after `rc music`:
+Through RemoteCompanion, the add-on exposes:
 
 ```sh
-rc music status
-rc music album Kind of Blue
+rc music playpause
 rc music queue artist
+rc music queue album
+rc music append album
 rc music love
 ```
 

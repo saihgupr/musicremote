@@ -14,8 +14,8 @@ entitlements, no extra libraries.
 
 ## Notifications
 
-    com.chris.musicremote.req    CLI -> tweak
-    com.chris.musicremote.res    tweak -> CLI
+    com.saihgupr.musicremote.req    CLI -> tweak
+    com.saihgupr.musicremote.res    tweak -> CLI
 
 Post with `kCFNotificationDeliverImmediately`, no object, no userInfo.
 

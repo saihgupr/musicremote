@@ -159,3 +159,16 @@ The tweak writes three files next to the protocol files:
 
 If `notified.txt` updates but `trace.log` does not, the process is stuck. If
 neither updates, SpringBoard does not have the dylib: respring.
+
+
+## Contributing
+
+Contributions are welcome! Fork the repository, create a feature branch, and open a pull request.
+
+## Support & Feedback
+
+If you encounter any issues, bugs, or have feature requests, please [open an issue on GitHub](https://github.com/saihgupr/musicremote/issues).
+
+MusicRemote is open-source and free. If you find it useful, consider giving it a star on GitHub or making a donation to support development!
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/saihgupr)

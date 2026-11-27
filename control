@@ -7,3 +7,4 @@ Maintainer: saihgupr
 Author: saihgupr
 Section: Tweaks
 Depends: firmware (>= 15.0), ellekit
+Suggests: com.saihgupr.remotecompanion, openssh-client, sshpass

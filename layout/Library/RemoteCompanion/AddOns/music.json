@@ -83,6 +83,89 @@
       "icon": "heart.fill",
       "run": [{ "exec": ["{jbroot}/usr/bin/musicremote", "love", "toggle"] }],
       "banner": { "title": "Music", "icon": "heart.fill", "subtitle": "Love" }
+    },
+    {
+      "command": "transfer",
+      "name": "Transfer Playback",
+      "icon": "arrow.up.right.circle.fill",
+      "run": [
+        {
+          "exec": ["{jbroot}/usr/bin/musicremote", "transfer"],
+          "if": { "var": "input", "unset": true },
+          "as": "summary",
+          "stopOnError": true
+        },
+        {
+          "exec": ["{jbroot}/usr/bin/musicremote", "transfer", "{input}"],
+          "as": "summary",
+          "stopOnError": true
+        }
+      ],
+      "banner": {
+        "title": "Music",
+        "icon": "arrow.up.right.circle.fill",
+        "subtitle": "{summary}",
+        "failed": "Transfer Failed"
+      }
+    },
+    {
+      "command": "pull",
+      "name": "Pull Playback",
+      "icon": "arrow.down.left.circle.fill",
+      "run": [
+        {
+          "exec": ["{jbroot}/usr/bin/musicremote", "pull"],
+          "if": { "var": "input", "unset": true },
+          "as": "summary",
+          "stopOnError": true
+        },
+        {
+          "exec": ["{jbroot}/usr/bin/musicremote", "pull", "{input}"],
+          "as": "summary",
+          "stopOnError": true
+        }
+      ],
+      "banner": {
+        "title": "Music",
+        "icon": "arrow.down.left.circle.fill",
+        "subtitle": "{summary}",
+        "failed": "Transfer Failed"
+      }
+    }
+  ],
+  "settings": [
+    {
+      "id": "target",
+      "title": "Transfer Target",
+      "type": "text",
+      "domain": "com.saihgupr.musicremote.addon",
+      "key": "target",
+      "default": "Auto",
+      "suggestions": ["Auto"],
+      "suggestionsFile": "/var/mobile/Media/.musicremote/targets.json",
+      "note": "RemoteCompanion SSH Host or Remote RC Client to hand off with. Auto picks the first iOS device configured in RemoteCompanion."
+    },
+    {
+      "id": "overlap",
+      "title": "Handoff Overlap",
+      "type": "number",
+      "min": 0,
+      "max": 3,
+      "step": 0.5,
+      "unit": "s",
+      "domain": "com.saihgupr.musicremote.addon",
+      "key": "overlap",
+      "default": 1,
+      "note": "Keep playing briefly on the sending device while the other device starts."
+    },
+    {
+      "id": "always_play",
+      "title": "Always Play on Target",
+      "type": "switch",
+      "domain": "com.saihgupr.musicremote.addon",
+      "key": "alwaysPlay",
+      "default": false,
+      "note": "Start playing on the receiving device even when transferring while paused."
     }
   ]
 }

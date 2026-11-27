@@ -33,6 +33,8 @@ CLI can ignore a stale response from an earlier call.
 | action | args | notes |
 |---|---|---|
 | `status` | none | now playing snapshot |
+| `snapshot` | none | full now playing state + up to 600 queue items for handoff |
+| `handoff` | `ids`/`pids`, `start`, `elapsed`, `play`, `shuffle`, `repeat` | apply transferred queue and player state |
 | `play` / `pause` / `toggle` | none | |
 | `next` / `prev` | none | |
 | `queueByStore` | `ids`, `mode` | **preferred.** Apple Music catalog IDs, in play order, decimals as strings |
@@ -83,7 +85,7 @@ negative SQLite values are reinterpreted as unsigned.
 ```json
 {"state":"playing","title":"So What","artist":"Miles Davis",
  "album":"Kind of Blue","index":1,"total":5,
- "elapsed":12.4,"duration":545.0,"shuffle":"off",
+ "elapsed":12.4,"duration":545.0,"shuffle":"off","repeat":"none",
  "albumID":"1421350079176516109","albumArtistID":"4273702906016223495",
  "trackID":"5481794911435167","storeID":"1440857781","disc":1,"track":1}
 ```

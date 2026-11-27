@@ -22,6 +22,7 @@ static NSString *const kMusicRemoteResponseNote = @"com.saihgupr.musicremote.res
 @interface MPMusicPlayerController (MusicRemoteLegacy)
 @property (nonatomic, readonly) NSUInteger numberOfItems;
 @property (nonatomic, readonly) NSTimeInterval playbackDuration;
+- (nullable MPMediaItem *)nowPlayingItemAtIndex:(NSUInteger)index;
 @end
 
 @interface MPMediaLibrary (MusicRemoteLegacy)
@@ -149,6 +150,89 @@ static NSString *MRShuffleString(MPMusicShuffleMode mode) {
         default: return @"default";
     }
 }
+static MPMusicShuffleMode MRShuffleModeFromString(NSString *text) {
+    if ([text isEqualToString:@"songs"]) return MPMusicShuffleModeSongs;
+    if ([text isEqualToString:@"albums"]) return MPMusicShuffleModeAlbums;
+    if ([text isEqualToString:@"off"]) return MPMusicShuffleModeOff;
+    return MPMusicShuffleModeDefault;
+}
+static NSString *MRRepeatString(MPMusicRepeatMode mode) {
+    switch (mode) {
+        case MPMusicRepeatModeNone: return @"none";
+        case MPMusicRepeatModeOne: return @"one";
+        case MPMusicRepeatModeAll: return @"all";
+        default: return @"default";
+    }
+}
+static MPMusicRepeatMode MRRepeatModeFromString(NSString *text) {
+    if ([text isEqualToString:@"one"]) return MPMusicRepeatModeOne;
+    if ([text isEqualToString:@"all"]) return MPMusicRepeatModeAll;
+    if ([text isEqualToString:@"none"]) return MPMusicRepeatModeNone;
+    return MPMusicRepeatModeDefault;
+}
+
+static void MRRefreshTargetsFile(void) {
+    static NSDate *lastPlistMTime = nil;
+    static BOOL sawMissingPlist = NO;
+    NSString *plistPath = @"/var/mobile/Documents/rc_triggers.plist";
+    NSString *outPath = [kMusicRemoteDirectory stringByAppendingPathComponent:@"targets.json"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSDictionary *attrs = [fm attributesOfItemAtPath:plistPath error:nil];
+    NSDate *mtime = attrs[NSFileModificationDate];
+    if (mtime == nil) {
+        if (sawMissingPlist && [fm fileExistsAtPath:outPath]) return;
+    } else if (lastPlistMTime != nil && [mtime isEqualToDate:lastPlistMTime] && [fm fileExistsAtPath:outPath]) {
+        return;
+    }
+
+    NSMutableArray<NSString *> *targets = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    void (^addTarget)(NSString *) = ^(NSString *name) {
+        if (![name isKindOfClass:[NSString class]]) return;
+        NSString *trimmed = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (trimmed.length == 0) return;
+        NSString *key = trimmed.lowercaseString;
+        if ([seen containsObject:key]) return;
+        [seen addObject:key];
+        [targets addObject:trimmed];
+    };
+
+    NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    if ([cfg isKindOfClass:[NSDictionary class]]) {
+        NSArray *sshHosts = [cfg[@"sshHosts"] isKindOfClass:[NSArray class]] ? cfg[@"sshHosts"] : @[];
+        NSArray *rcClients = [cfg[@"rcClients"] isKindOfClass:[NSArray class]] ? cfg[@"rcClients"] : @[];
+        // Prefer mobile/iOS SSH hosts and Remote RC clients at the top of the picker.
+        for (NSDictionary *h in sshHosts) {
+            if (![h isKindOfClass:[NSDictionary class]]) continue;
+            NSString *user = [h[@"user"] isKindOfClass:[NSString class]] ? h[@"user"] : @"";
+            if ([user.lowercaseString isEqualToString:@"mobile"]) {
+                addTarget(h[@"name"] ?: h[@"host"]);
+            }
+        }
+        for (NSDictionary *c in rcClients) {
+            if (![c isKindOfClass:[NSDictionary class]]) continue;
+            addTarget(c[@"name"] ?: c[@"host"]);
+        }
+        for (NSDictionary *h in sshHosts) {
+            if (![h isKindOfClass:[NSDictionary class]]) continue;
+            addTarget(h[@"name"] ?: h[@"host"]);
+        }
+    }
+
+    NSData *json = [NSJSONSerialization dataWithJSONObject:targets options:0 error:nil];
+    if (json != nil) {
+        MREnsureDirectory();
+        NSString *tmp = [outPath stringByAppendingString:@".tmp"];
+        if ([json writeToFile:tmp atomically:NO]) {
+            if (rename(tmp.fileSystemRepresentation, outPath.fileSystemRepresentation) != 0) {
+                unlink(tmp.fileSystemRepresentation);
+            } else {
+                lastPlistMTime = mtime;
+                sawMissingPlist = (mtime == nil);
+            }
+        }
+    }
+}
 
 static NSDictionary *MRStatusDict(void) {
     MPMusicPlayerController *player = [MPMusicPlayerController systemMusicPlayer];
@@ -156,6 +240,7 @@ static NSDictionary *MRStatusDict(void) {
     NSMutableDictionary *data = [NSMutableDictionary dictionary];
     data[@"state"] = MRStateString(player.playbackState);
     data[@"shuffle"] = MRShuffleString(player.shuffleMode);
+    data[@"repeat"] = MRRepeatString(player.repeatMode);
     data[@"title"] = item ? MRItemString(item, MPMediaItemPropertyTitle) : @"";
     data[@"artist"] = item ? MRItemString(item, MPMediaItemPropertyArtist) : @"";
     data[@"album"] = item ? MRItemString(item, MPMediaItemPropertyAlbumTitle) : @"";
@@ -166,8 +251,10 @@ static NSDictionary *MRStatusDict(void) {
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     NSUInteger index = player.indexOfNowPlayingItem;
     NSUInteger total = [player respondsToSelector:@selector(numberOfItems)] ? player.numberOfItems : 0;
-    NSTimeInterval duration = [player respondsToSelector:@selector(playbackDuration)] ? player.playbackDuration : 0.0;
-    data[@"elapsed"] = @(player.currentPlaybackTime);
+    NSTimeInterval duration = item ? item.playbackDuration : 0.0;
+    NSTimeInterval elapsed = player.currentPlaybackTime;
+    if (elapsed < 0 || isnan(elapsed) || isinf(elapsed)) elapsed = 0.0;
+    data[@"elapsed"] = @(elapsed);
     data[@"index"] = @(index == NSNotFound ? -1 : (NSInteger)index);
     data[@"total"] = @(total);
     data[@"duration"] = @(duration);
@@ -207,6 +294,8 @@ static NSDictionary *MRStatusDict(void) {
 - (NSDictionary *)libraryStats;
 - (NSDictionary *)volumeAction:(NSDictionary *)args;
 - (NSDictionary *)love:(NSDictionary *)args;
+- (NSDictionary *)snapshotAction;
+- (NSDictionary *)handoffAction:(NSDictionary *)args;
 - (NSDictionary *)finishQueue:(NSArray<MPMediaItem *> *)songs mode:(NSString *)mode
                       matched:(NSString *)matched others:(NSArray<NSString *> *)others;
 @end
@@ -247,6 +336,7 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
     // Touch the system player once so the first real command does not pay the
     // multi-second cold start of mediaserverd's now-playing handshake.
     dispatch_async([self workQueue], ^{
+        MRRefreshTargetsFile();
         (void)[MPMusicPlayerController systemMusicPlayer].playbackState;
         NSLog(@"[MusicRemote] player warmed");
     });
@@ -355,8 +445,11 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
 }
 
 - (NSDictionary *)dispatchAction:(NSString *)action args:(NSDictionary *)args {
+    MRRefreshTargetsFile();
     MPMusicPlayerController *player = [MPMusicPlayerController systemMusicPlayer];
     if ([action isEqualToString:@"status"]) return MRStatusDict();
+    if ([action isEqualToString:@"snapshot"]) return [self snapshotAction];
+    if ([action isEqualToString:@"handoff"]) return [self handoffAction:args];
     if ([action isEqualToString:@"play"]) { [player play]; return MRStatusDict(); }
     if ([action isEqualToString:@"pause"]) { [player pause]; return MRStatusDict(); }
     if ([action isEqualToString:@"next"]) { [player skipToNextItem]; return MRStatusDict(); }
@@ -377,6 +470,178 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
 
     MRFail(@"unknown action \"%@\"", action);
     return @{};
+}
+
+- (NSDictionary *)snapshotAction {
+    MPMusicPlayerController *player = [MPMusicPlayerController systemMusicPlayer];
+    MPMediaItem *item = player.nowPlayingItem;
+    if (item == nil) MRFail(@"nothing is playing");
+
+    NSMutableDictionary *data = [MRStatusDict() mutableCopy];
+    NSUInteger index = player.indexOfNowPlayingItem;
+    NSUInteger total = [player respondsToSelector:@selector(numberOfItems)] ? player.numberOfItems : 0;
+    const NSUInteger maxItems = 600;
+
+    NSUInteger start = 0;
+    NSUInteger count = MIN(total, maxItems);
+    if (total > maxItems && index != NSNotFound && index < total) {
+        NSUInteger keepBefore = 50;
+        start = index > keepBefore ? index - keepBefore : 0;
+        if (start + maxItems > total) start = total - maxItems;
+        count = maxItems;
+    }
+
+    NSMutableArray<NSDictionary *> *queue = [NSMutableArray arrayWithCapacity:count ?: 1];
+    NSInteger queueIndex = -1;
+    BOOL canEnumerate = [player respondsToSelector:@selector(nowPlayingItemAtIndex:)];
+    if (canEnumerate && count > 0) {
+        for (NSUInteger offset = 0; offset < count; offset++) {
+            NSUInteger i = start + offset;
+            MPMediaItem *qItem = [player nowPlayingItemAtIndex:i];
+            if (qItem == nil) {
+                if (i == index) qItem = item;
+                else continue;
+            }
+            NSString *storeID = MRItemString(qItem, MPMediaItemPropertyPlaybackStoreID);
+            if (storeID.length == 0 && i == index) {
+                storeID = MRItemString(item, MPMediaItemPropertyPlaybackStoreID);
+            }
+            NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+            if (storeID.length > 0 && strtoull(storeID.UTF8String, NULL, 10) > 0) {
+                entry[@"storeID"] = storeID;
+            } else {
+                NSString *t = MRItemString(qItem, MPMediaItemPropertyTitle);
+                NSString *a = MRItemString(qItem, MPMediaItemPropertyArtist);
+                NSString *al = MRItemString(qItem, MPMediaItemPropertyAlbumTitle);
+                if (t.length > 0) entry[@"title"] = t;
+                if (a.length > 0) entry[@"artist"] = a;
+                if (al.length > 0) entry[@"album"] = al;
+            }
+            if (entry.count == 0) continue;
+            if (i == index) queueIndex = (NSInteger)queue.count;
+            [queue addObject:entry];
+        }
+    }
+
+    if (queue.count == 0) {
+        NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+        NSString *storeID = MRItemString(item, MPMediaItemPropertyPlaybackStoreID);
+        if (storeID.length > 0 && strtoull(storeID.UTF8String, NULL, 10) > 0) {
+            entry[@"storeID"] = storeID;
+        } else {
+            NSString *t = MRItemString(item, MPMediaItemPropertyTitle);
+            NSString *a = MRItemString(item, MPMediaItemPropertyArtist);
+            NSString *al = MRItemString(item, MPMediaItemPropertyAlbumTitle);
+            if (t.length > 0) entry[@"title"] = t;
+            if (a.length > 0) entry[@"artist"] = a;
+            if (al.length > 0) entry[@"album"] = al;
+        }
+        if (entry.count > 0) {
+            [queue addObject:entry];
+            queueIndex = 0;
+        }
+    }
+
+    data[@"queue"] = queue;
+    data[@"queueIndex"] = @(queueIndex);
+    return data;
+}
+
+- (NSDictionary *)handoffAction:(NSDictionary *)args {
+    NSArray *rawStoreIDs = [args[@"ids"] isKindOfClass:[NSArray class]] ? args[@"ids"] : nil;
+    NSArray *rawPIDs = [args[@"pids"] isKindOfClass:[NSArray class]] ? args[@"pids"] : nil;
+    NSString *start = MRStringArgument(args, @"start");
+    double elapsed = [args[@"elapsed"] respondsToSelector:@selector(doubleValue)] ? MAX(0.0, [args[@"elapsed"] doubleValue]) : 0.0;
+    BOOL shouldPlay = [args[@"play"] respondsToSelector:@selector(boolValue)] ? [args[@"play"] boolValue] : YES;
+    NSString *shuffleStr = MRStringArgument(args, @"shuffle") ?: @"off";
+    NSString *repeatStr = MRStringArgument(args, @"repeat") ?: @"none";
+
+    MPMusicPlayerQueueDescriptor *descriptor = nil;
+    NSUInteger queuedCount = 0;
+
+    if (rawStoreIDs.count > 0) {
+        NSMutableArray<NSString *> *ids = [NSMutableArray arrayWithCapacity:rawStoreIDs.count];
+        for (id value in rawStoreIDs) {
+            NSString *text = [value isKindOfClass:[NSString class]] ? value : [value description];
+            if (strtoull(text.UTF8String, NULL, 10) > 0) [ids addObject:text];
+        }
+        if (ids.count == 0) MRFail(@"no usable store ids for handoff");
+
+        MPMusicPlayerStoreQueueDescriptor *storeDesc =
+            [[MPMusicPlayerStoreQueueDescriptor alloc] initWithStoreIDs:ids];
+        NSString *effectiveStart = (start.length > 0 && [ids containsObject:start]) ? start : ids.firstObject;
+        storeDesc.startItemID = effectiveStart;
+        if (elapsed > 0.5 && effectiveStart.length > 0) {
+            [storeDesc setStartTime:elapsed forItemWithStoreID:effectiveStart];
+        }
+        descriptor = storeDesc;
+        queuedCount = ids.count;
+    } else if (rawPIDs.count > 0) {
+        NSMutableArray<MPMediaItem *> *items = [NSMutableArray arrayWithCapacity:rawPIDs.count];
+        MPMediaItem *startItem = nil;
+        unsigned long long startPID = start.length > 0 ? strtoull(start.UTF8String, NULL, 10) : 0;
+        for (id value in rawPIDs) {
+            NSString *text = [value isKindOfClass:[NSString class]] ? value : [value description];
+            unsigned long long pid = strtoull(text.UTF8String, NULL, 10);
+            if (pid == 0) continue;
+            MPMediaQuery *q = [MPMediaQuery songsQuery];
+            [q addFilterPredicate:[MPMediaPropertyPredicate predicateWithValue:@(pid) forProperty:MPMediaItemPropertyPersistentID]];
+            MPMediaItem *found = q.items.firstObject;
+            if (found != nil) {
+                [items addObject:found];
+                if (startPID != 0 && pid == startPID && startItem == nil) startItem = found;
+            }
+        }
+        if (items.count == 0) MRFail(@"no matching local songs found for handoff");
+        MPMediaItemCollection *collection = [MPMediaItemCollection collectionWithItems:items];
+        MPMusicPlayerMediaItemQueueDescriptor *itemDesc =
+            [[MPMusicPlayerMediaItemQueueDescriptor alloc] initWithItemCollection:collection];
+        if (startItem == nil) startItem = items.firstObject;
+        itemDesc.startItem = startItem;
+        if (elapsed > 0.5 && startItem != nil) {
+            [itemDesc setStartTime:elapsed forItem:startItem];
+        }
+        descriptor = itemDesc;
+        queuedCount = items.count;
+    } else {
+        MRFail(@"handoff needs \"ids\" or \"pids\"");
+    }
+
+    MPMusicPlayerController *player = [MPMusicPlayerController systemMusicPlayer];
+    MPMusicShuffleMode targetShuffle = MRShuffleModeFromString(shuffleStr);
+    MPMusicRepeatMode targetRepeat = MRRepeatModeFromString(repeatStr);
+
+    [player setQueueWithDescriptor:descriptor];
+
+    dispatch_semaphore_t ready = dispatch_semaphore_create(0);
+    __block NSError *prepareError = nil;
+    [player prepareToPlayWithCompletionHandler:^(NSError *error) {
+        prepareError = error;
+        dispatch_semaphore_signal(ready);
+    }];
+    dispatch_semaphore_wait(ready, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.5 * NSEC_PER_SEC)));
+    if (prepareError != nil) {
+        NSLog(@"[MusicRemote] handoff prepare failed: %@", prepareError.localizedDescription);
+    }
+
+    // Re-apply shuffle and repeat after prepare: setQueueWithDescriptor can restore Music's prior modes.
+    if (targetShuffle != MPMusicShuffleModeDefault) player.shuffleMode = targetShuffle;
+    if (targetRepeat != MPMusicRepeatModeDefault) player.repeatMode = targetRepeat;
+
+    if (shouldPlay) {
+        [player play];
+        if (elapsed > 0.5 && fabs(player.currentPlaybackTime - elapsed) > 2.0) {
+            player.currentPlaybackTime = elapsed;
+        }
+    } else {
+        if (elapsed > 0.5) player.currentPlaybackTime = elapsed;
+        [player pause];
+    }
+
+    NSMutableDictionary *data = [MRStatusDict() mutableCopy];
+    data[@"queued"] = @(queuedCount);
+    data[@"played"] = @(shouldPlay);
+    return data;
 }
 
 - (NSDictionary *)love:(NSDictionary *)args {

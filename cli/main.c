@@ -13,9 +13,13 @@
  */
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <math.h>
+#include <poll.h>
+#include <signal.h>
 #include <spawn.h>
 #include <sqlite3.h>
 #include <stdarg.h>
@@ -130,6 +134,41 @@ static void dbuf_add(dbuf *d, const char *s) {
 	memcpy(d->buf + d->len, s, n);
 	d->len += n;
 	d->buf[d->len] = '\0';
+}
+
+static void dbuf_addc(dbuf *d, char c) {
+	dbuf_reserve(d, 1);
+	d->buf[d->len++] = c;
+	d->buf[d->len] = '\0';
+}
+
+static void dbuf_addf(dbuf *d, const char *fmt, ...) {
+	va_list ap, ap2;
+	va_start(ap, fmt);
+	va_copy(ap2, ap);
+	int n = vsnprintf(NULL, 0, fmt, ap);
+	va_end(ap);
+	if (n < 0) { va_end(ap2); return; }
+	dbuf_reserve(d, (size_t)n);
+	vsnprintf(d->buf + d->len, (size_t)n + 1, fmt, ap2);
+	va_end(ap2);
+	d->len += (size_t)n;
+}
+
+static void dbuf_add_escaped(dbuf *d, const char *v) {
+	dbuf_addc(d, '"');
+	for (const unsigned char *p = (const unsigned char *)(v ? v : ""); *p; p++) {
+		unsigned char c = *p;
+		if (c == '"' || c == '\\') { dbuf_addc(d, '\\'); dbuf_addc(d, (char)c); }
+		else if (c == '\b') dbuf_add(d, "\\b");
+		else if (c == '\f') dbuf_add(d, "\\f");
+		else if (c == '\n') dbuf_add(d, "\\n");
+		else if (c == '\r') dbuf_add(d, "\\r");
+		else if (c == '\t') dbuf_add(d, "\\t");
+		else if (c < 0x20) dbuf_addf(d, "\\u%04x", c);
+		else dbuf_addc(d, (char)c);
+	}
+	dbuf_addc(d, '"');
 }
 
 /* Appends a word to a space-separated query; -1 if it does not fit. */
@@ -317,6 +356,16 @@ static int json_num(const char *obj, const char *key, double *out) {
 	if (end == v) return 0;
 	*out = d;
 	return 1;
+}
+
+static int json_bool(const char *obj, const char *key, int *out) {
+	const char *v = json_value(obj, key);
+	if (!v) return 0;
+	if (!strncmp(v, "true", 4)) { *out = 1; return 1; }
+	if (!strncmp(v, "false", 5)) { *out = 0; return 1; }
+	double d = 0;
+	if (json_num(obj, key, &d)) { *out = d != 0.0; return 1; }
+	return 0;
 }
 
 static char *json_raw(const char *obj, const char *key, const char *def) {
@@ -1169,6 +1218,10 @@ static void usage(void) {
 	      "  song <query> [--artist <name>] [--replace|--append|--next]\n"
 	      "  queue album [--next | --rest | --append | --from-start]\n"
 	      "  queue artist [--next | --append]\n"
+	      "  transfer [target] [--to <target>] [--from <source>] [--overlap <sec>] [--play|--pause]\n"
+	      "  pull [source] [--from <source>] [--overlap <sec>] [--play|--pause]\n"
+	      "  snapshot\n"
+	      "  receive [--b64 <payload> | --data <json>] [--play|--pause]\n"
 	      "  search <query> [--limit N]\n"
 	      "  library\n"
 	      "  state\n"
@@ -1564,6 +1617,1214 @@ static int cmd_current(int ac, char **av, int as_json) {
 	return 0;
 }
 
+/* ---------- handoff / transfer ---------- */
+
+#define RC_PLIST_PATH   "/var/mobile/Documents/rc_triggers.plist"
+#define ADDON_DOMAIN    "com.saihgupr.musicremote.addon"
+#define SSH_TIMEOUT_MS  12000
+#define MAX_RC_TARGETS  64
+
+typedef enum { TGT_NONE = 0, TGT_SSH, TGT_RC } target_kind_t;
+
+typedef struct {
+	target_kind_t kind;
+	char id[96];
+	char name[128];
+	char host[256];
+	char user[128];
+	char password[256];
+	char key_path[PATH_MAX];
+	char token[256];
+	int port;
+	int has_password;
+	int has_key;
+} rc_target_t;
+
+typedef struct {
+	char target[256];
+	double overlap;
+	int always_play;
+} addon_prefs_t;
+
+static const char *effective_home(void) {
+	const char *h = getenv("HOME");
+	return (h && *h) ? h : "/var/mobile";
+}
+
+static void expand_tilde(const char *in, char *out, size_t n) {
+	if (in[0] == '~' && (in[1] == '/' || in[1] == '\0')) {
+		snprintf(out, n, "%s%s", effective_home(), in + 1);
+	} else {
+		snprintf(out, n, "%s", in);
+	}
+}
+
+static int find_bin(const char *name, char *out, size_t n) {
+	static const char *const dirs[] = {
+		"/var/jb/usr/bin", "/var/jb/usr/local/bin", "/var/jb/bin",
+		"/usr/bin", "/usr/local/bin", "/bin"
+	};
+	for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+		snprintf(out, n, "%s/%s", dirs[i], name);
+		if (access(out, X_OK) == 0) return 1;
+	}
+	out[0] = '\0';
+	return 0;
+}
+
+static const char B64URL[] =
+	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+static char *b64url_encode(const unsigned char *in, size_t len) {
+	size_t cap = ((len + 2) / 3) * 4 + 1;
+	char *out = malloc(cap);
+	if (!out) oom();
+	size_t j = 0;
+	for (size_t i = 0; i < len; i += 3) {
+		unsigned v = (unsigned)in[i] << 16;
+		int rem = (int)(len - i);
+		if (rem > 1) v |= (unsigned)in[i + 1] << 8;
+		if (rem > 2) v |= (unsigned)in[i + 2];
+		out[j++] = B64URL[(v >> 18) & 63];
+		out[j++] = B64URL[(v >> 12) & 63];
+		if (rem > 1) out[j++] = B64URL[(v >> 6) & 63];
+		if (rem > 2) out[j++] = B64URL[v & 63];
+	}
+	out[j] = '\0';
+	return out;
+}
+
+static int b64_val(unsigned char c) {
+	if (c >= 'A' && c <= 'Z') return c - 'A';
+	if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+	if (c >= '0' && c <= '9') return c - '0' + 52;
+	if (c == '-' || c == '+') return 62;
+	if (c == '_' || c == '/') return 63;
+	return -1;
+}
+
+static char *b64_decode(const char *in, size_t *out_len) {
+	size_t slen = strlen(in);
+	unsigned char *out = malloc((slen * 3) / 4 + 4);
+	if (!out) oom();
+	unsigned val = 0;
+	int bits = -8;
+	size_t j = 0;
+	for (size_t i = 0; i < slen; i++) {
+		unsigned char c = (unsigned char)in[i];
+		if (c == '=' || isspace(c)) continue;
+		int d = b64_val(c);
+		if (d < 0) { free(out); return NULL; }
+		val = (val << 6) | (unsigned)d;
+		bits += 6;
+		if (bits >= 0) {
+			out[j++] = (unsigned char)((val >> bits) & 0xFF);
+			bits -= 8;
+		}
+	}
+	out[j] = '\0';
+	if (out_len) *out_len = j;
+	return (char *)out;
+}
+
+static char *read_stdin_all(size_t max_bytes) {
+	dbuf d = {0};
+	char chunk[4096];
+	for (;;) {
+		ssize_t r = read(STDIN_FILENO, chunk, sizeof chunk);
+		if (r < 0 && errno == EINTR) continue;
+		if (r <= 0) break;
+		if (d.len + (size_t)r > max_bytes) {
+			free(d.buf);
+			local_fail("input exceeds %zu bytes", max_bytes);
+		}
+		dbuf_reserve(&d, (size_t)r);
+		memcpy(d.buf + d.len, chunk, (size_t)r);
+		d.len += (size_t)r;
+		d.buf[d.len] = '\0';
+	}
+	return d.buf ? d.buf : strdup("");
+}
+
+static int cf_to_cstr(CFTypeRef ref, char *out, size_t n) {
+	out[0] = '\0';
+	if (!ref) return 0;
+	CFTypeID tid = CFGetTypeID(ref);
+	if (tid == CFStringGetTypeID()) {
+		if (!CFStringGetCString((CFStringRef)ref, out, (CFIndex)n, kCFStringEncodingUTF8)) {
+			out[0] = '\0';
+			return 0;
+		}
+		return out[0] != '\0';
+	}
+	if (tid == CFNumberGetTypeID()) {
+		long long v = 0;
+		if (CFNumberGetValue((CFNumberRef)ref, kCFNumberLongLongType, &v)) {
+			snprintf(out, n, "%lld", v);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void read_addon_prefs(addon_prefs_t *prefs) {
+	memset(prefs, 0, sizeof *prefs);
+	prefs->overlap = 1.0;
+	prefs->always_play = 0;
+
+	CFStringRef domain = CFSTR(ADDON_DOMAIN);
+	CFPreferencesAppSynchronize(domain);
+
+	CFTypeRef v = CFPreferencesCopyAppValue(CFSTR("target"), domain);
+	if (v) {
+		cf_to_cstr(v, prefs->target, sizeof prefs->target);
+		CFRelease(v);
+	}
+	v = CFPreferencesCopyAppValue(CFSTR("overlap"), domain);
+	if (v) {
+		if (CFGetTypeID(v) == CFNumberGetTypeID()) {
+			double d = 1.0;
+			if (CFNumberGetValue((CFNumberRef)v, kCFNumberDoubleType, &d) && isfinite(d)) {
+				if (d < 0.0) d = 0.0;
+				if (d > 5.0) d = 5.0;
+				prefs->overlap = d;
+			}
+		} else if (CFGetTypeID(v) == CFStringGetTypeID()) {
+			char buf[64];
+			if (cf_to_cstr(v, buf, sizeof buf)) {
+				char *end = NULL;
+				double d = strtod(buf, &end);
+				if (end != buf && isfinite(d)) {
+					if (d < 0.0) d = 0.0;
+					if (d > 5.0) d = 5.0;
+					prefs->overlap = d;
+				}
+			}
+		}
+		CFRelease(v);
+	}
+	v = CFPreferencesCopyAppValue(CFSTR("alwaysPlay"), domain);
+	if (v) {
+		if (CFGetTypeID(v) == CFBooleanGetTypeID()) {
+			prefs->always_play = CFBooleanGetValue((CFBooleanRef)v) ? 1 : 0;
+		} else if (CFGetTypeID(v) == CFNumberGetTypeID()) {
+			int b = 0;
+			if (CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &b)) prefs->always_play = b != 0;
+		}
+		CFRelease(v);
+	}
+}
+
+static int dict_str(CFDictionaryRef d, CFStringRef k, char *out, size_t n) {
+	return cf_to_cstr(CFDictionaryGetValue(d, k), out, n);
+}
+
+static int dict_int(CFDictionaryRef d, CFStringRef k, int def) {
+	CFTypeRef v = CFDictionaryGetValue(d, k);
+	if (!v) return def;
+	if (CFGetTypeID(v) == CFNumberGetTypeID()) {
+		int x = def;
+		if (CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &x)) return x;
+	} else if (CFGetTypeID(v) == CFStringGetTypeID()) {
+		char buf[32];
+		if (cf_to_cstr(v, buf, sizeof buf)) {
+			long x = strtol(buf, NULL, 10);
+			if (x > 0 && x <= 65535) return (int)x;
+		}
+	}
+	return def;
+}
+
+static void parse_ssh_dict(CFDictionaryRef d, rc_target_t *t) {
+	memset(t, 0, sizeof *t);
+	t->kind = TGT_SSH;
+	dict_str(d, CFSTR("id"), t->id, sizeof t->id);
+	dict_str(d, CFSTR("name"), t->name, sizeof t->name);
+	dict_str(d, CFSTR("host"), t->host, sizeof t->host);
+	if (!dict_str(d, CFSTR("user"), t->user, sizeof t->user))
+		snprintf(t->user, sizeof t->user, "mobile");
+	t->port = dict_int(d, CFSTR("port"), 22);
+	if (t->port <= 0 || t->port > 65535) t->port = 22;
+
+	char auth[32] = "";
+	dict_str(d, CFSTR("authType"), auth, sizeof auth);
+	dict_str(d, CFSTR("keyPath"), t->key_path, sizeof t->key_path);
+	dict_str(d, CFSTR("password"), t->password, sizeof t->password);
+	if (ieq(auth, "key") && t->key_path[0]) {
+		t->has_key = 1;
+	} else if (t->password[0]) {
+		t->has_password = 1;
+	}
+	if (!t->name[0]) snprintf(t->name, sizeof t->name, "%s", t->host);
+}
+
+static void parse_rc_dict(CFDictionaryRef d, rc_target_t *t) {
+	memset(t, 0, sizeof *t);
+	t->kind = TGT_RC;
+	dict_str(d, CFSTR("id"), t->id, sizeof t->id);
+	dict_str(d, CFSTR("name"), t->name, sizeof t->name);
+	dict_str(d, CFSTR("host"), t->host, sizeof t->host);
+	dict_str(d, CFSTR("token"), t->token, sizeof t->token);
+	t->port = dict_int(d, CFSTR("port"), 8080);
+	if (t->port <= 0 || t->port > 65535) t->port = 8080;
+	if (!t->name[0]) snprintf(t->name, sizeof t->name, "%s", t->host);
+}
+
+static int load_rc_targets(rc_target_t *ssh, int max_ssh, int *n_ssh,
+                           rc_target_t *rc, int max_rc, int *n_rc) {
+	*n_ssh = 0;
+	*n_rc = 0;
+	const char *plist_path = getenv("MUSICREMOTE_RC_PLIST");
+	if (!plist_path || !*plist_path) plist_path = RC_PLIST_PATH;
+
+	FILE *f = fopen(plist_path, "rb");
+	if (!f) return 0;
+	if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
+	long sz = ftell(f);
+	if (sz <= 0 || sz > 8 * 1024 * 1024) { fclose(f); return 0; }
+	rewind(f);
+	unsigned char *buf = malloc((size_t)sz);
+	if (!buf) { fclose(f); oom(); }
+	size_t got = fread(buf, 1, (size_t)sz, f);
+	fclose(f);
+
+	CFDataRef data = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, buf, (CFIndex)got, kCFAllocatorNull);
+	CFPropertyListRef plist = data ? CFPropertyListCreateWithData(kCFAllocatorDefault, data, kCFPropertyListImmutable, NULL, NULL) : NULL;
+	if (data) CFRelease(data);
+	free(buf);
+	if (!plist) return 0;
+
+	if (CFGetTypeID(plist) == CFDictionaryGetTypeID()) {
+		CFDictionaryRef root = (CFDictionaryRef)plist;
+		CFTypeRef arr = CFDictionaryGetValue(root, CFSTR("sshHosts"));
+		if (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) {
+			CFIndex count = CFArrayGetCount((CFArrayRef)arr);
+			for (CFIndex i = 0; i < count && *n_ssh < max_ssh; i++) {
+				CFTypeRef item = CFArrayGetValueAtIndex((CFArrayRef)arr, i);
+				if (item && CFGetTypeID(item) == CFDictionaryGetTypeID()) {
+					rc_target_t t;
+					parse_ssh_dict((CFDictionaryRef)item, &t);
+					if (t.host[0]) ssh[(*n_ssh)++] = t;
+				}
+			}
+		}
+		arr = CFDictionaryGetValue(root, CFSTR("rcClients"));
+		if (arr && CFGetTypeID(arr) == CFArrayGetTypeID()) {
+			CFIndex count = CFArrayGetCount((CFArrayRef)arr);
+			for (CFIndex i = 0; i < count && *n_rc < max_rc; i++) {
+				CFTypeRef item = CFArrayGetValueAtIndex((CFArrayRef)arr, i);
+				if (item && CFGetTypeID(item) == CFDictionaryGetTypeID()) {
+					rc_target_t t;
+					parse_rc_dict((CFDictionaryRef)item, &t);
+					if (t.host[0]) rc[(*n_rc)++] = t;
+				}
+			}
+		}
+	}
+	CFRelease(plist);
+	return 1;
+}
+
+static int matches_target(const rc_target_t *t, const char *q) {
+	return (t->id[0] && ieq(t->id, q)) ||
+	       (t->name[0] && ieq(t->name, q)) ||
+	       (t->host[0] && ieq(t->host, q));
+}
+
+static int looks_ios_ssh(const rc_target_t *t, const rc_target_t *rc, int n_rc) {
+	if (ieq(t->user, "mobile")) return 1;
+	if (icontains(t->name, "iphone") || icontains(t->name, "ipad") || icontains(t->name, "ipod"))
+		return 1;
+	if (icontains(t->host, "iphone") || icontains(t->host, "ipad") || icontains(t->host, "ipod"))
+		return 1;
+	for (int i = 0; i < n_rc; i++) {
+		if (ieq(rc[i].host, t->host)) return 1;
+	}
+	return 0;
+}
+
+static const char *trim_copy(const char *s, char *out, size_t n) {
+	while (*s && isspace((unsigned char)*s)) s++;
+	snprintf(out, n, "%s", s);
+	size_t len = strlen(out);
+	while (len > 0 && isspace((unsigned char)out[len - 1])) out[--len] = '\0';
+	return out;
+}
+
+static void parse_direct_ssh(const char *spec, rc_target_t *out) {
+	memset(out, 0, sizeof *out);
+	out->kind = TGT_SSH;
+	out->port = 22;
+	snprintf(out->user, sizeof out->user, "mobile");
+
+	const char *at = strchr(spec, '@');
+	const char *hostpart = spec;
+	if (at && at != spec) {
+		size_t ulen = (size_t)(at - spec);
+		if (ulen >= sizeof out->user) ulen = sizeof out->user - 1;
+		memcpy(out->user, spec, ulen);
+		out->user[ulen] = '\0';
+		hostpart = at + 1;
+	}
+	const char *colon = strchr(hostpart, ':');
+	if (colon && !strchr(colon + 1, ':')) {
+		size_t hlen = (size_t)(colon - hostpart);
+		if (hlen >= sizeof out->host) hlen = sizeof out->host - 1;
+		memcpy(out->host, hostpart, hlen);
+		out->host[hlen] = '\0';
+		long p = strtol(colon + 1, NULL, 10);
+		if (p > 0 && p <= 65535) out->port = (int)p;
+	} else {
+		snprintf(out->host, sizeof out->host, "%s", hostpart);
+	}
+	if (!out->host[0] || out->host[0] == '-' || strchr(out->host, ' ') ||
+	    out->user[0] == '-' || strchr(out->user, ' ')) {
+		local_fail("invalid target host \"%s\"", spec);
+	}
+	snprintf(out->name, sizeof out->name, "%s", out->host);
+}
+
+static void resolve_target(const char *explicit_target, const addon_prefs_t *prefs,
+                           int require_ssh, rc_target_t *out) {
+	rc_target_t ssh[MAX_RC_TARGETS], rc[MAX_RC_TARGETS];
+	int n_ssh = 0, n_rc = 0;
+	load_rc_targets(ssh, MAX_RC_TARGETS, &n_ssh, rc, MAX_RC_TARGETS, &n_rc);
+
+	char qbuf[256];
+	const char *raw = (explicit_target && *explicit_target) ? explicit_target : prefs->target;
+	trim_copy(raw ? raw : "", qbuf, sizeof qbuf);
+
+	if (qbuf[0] && !ieq(qbuf, "auto")) {
+		for (int i = 0; i < n_ssh; i++) {
+			if (matches_target(&ssh[i], qbuf)) { *out = ssh[i]; return; }
+		}
+		if (!require_ssh) {
+			for (int i = 0; i < n_rc; i++) {
+				if (matches_target(&rc[i], qbuf)) { *out = rc[i]; return; }
+			}
+		}
+		parse_direct_ssh(qbuf, out);
+		return;
+	}
+
+	for (int i = 0; i < n_ssh; i++) {
+		if (looks_ios_ssh(&ssh[i], rc, n_rc)) { *out = ssh[i]; return; }
+	}
+	if (!require_ssh && n_rc > 0) {
+		*out = rc[0];
+		return;
+	}
+	if (require_ssh && n_rc > 0) {
+		local_fail("pull requires SSH access to %s (add it under RemoteCompanion > Settings > Integrations > SSH Hosts)",
+		           rc[0].name);
+	}
+	local_fail("no target device configured (add an SSH Host or Remote RC Client in RemoteCompanion, set Transfer Target in Add-ons > MusicRemote, or pass --to <host>)");
+}
+
+static int run_ssh_command(const rc_target_t *t, const char *remote_cmd,
+                           const char *stdin_data, size_t stdin_len,
+                           char **stdout_out, char **stderr_out) {
+	*stdout_out = NULL;
+	*stderr_out = NULL;
+
+	char ssh_bin[PATH_MAX], sshpass_bin[PATH_MAX];
+	if (!find_bin("ssh", ssh_bin, sizeof ssh_bin))
+		local_fail("openssh-client is not installed (install openssh-client from Sileo or Zebra)");
+	if (t->has_password && !find_bin("sshpass", sshpass_bin, sizeof sshpass_bin))
+		local_fail("sshpass is not installed (install sshpass for password SSH auth, or use SSH keys)");
+
+	char key_expanded[PATH_MAX] = "";
+	if (t->has_key) expand_tilde(t->key_path, key_expanded, sizeof key_expanded);
+
+	char dest[512], port_str[16];
+	if (t->user[0]) snprintf(dest, sizeof dest, "%s@%s", t->user, t->host);
+	else snprintf(dest, sizeof dest, "%s", t->host);
+	snprintf(port_str, sizeof port_str, "%d", t->port > 0 ? t->port : 22);
+
+	const char *argv[24];
+	int argc = 0;
+	if (t->has_password) {
+		argv[argc++] = sshpass_bin;
+		argv[argc++] = "-e";
+	}
+	argv[argc++] = ssh_bin;
+	if (t->has_key && key_expanded[0]) {
+		argv[argc++] = "-i";
+		argv[argc++] = key_expanded;
+	}
+	argv[argc++] = "-p";
+	argv[argc++] = port_str;
+	argv[argc++] = "-o";
+	argv[argc++] = "StrictHostKeyChecking=no";
+	argv[argc++] = "-o";
+	argv[argc++] = "UserKnownHostsFile=/dev/null";
+	argv[argc++] = "-o";
+	argv[argc++] = "ConnectTimeout=4";
+	argv[argc++] = "-o";
+	argv[argc++] = "LogLevel=ERROR";
+	if (!t->has_password && !t->has_key) {
+		argv[argc++] = "-o";
+		argv[argc++] = "BatchMode=yes";
+	}
+	argv[argc++] = dest;
+	argv[argc++] = remote_cmd;
+	argv[argc] = NULL;
+
+	int in_pipe[2] = {-1, -1}, out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1};
+	if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+		for (int i = 0; i < 2; i++) {
+			if (in_pipe[i] >= 0) close(in_pipe[i]);
+			if (out_pipe[i] >= 0) close(out_pipe[i]);
+			if (err_pipe[i] >= 0) close(err_pipe[i]);
+		}
+		local_fail("failed to create pipes for ssh");
+	}
+
+	posix_spawn_file_actions_t fa;
+	posix_spawn_file_actions_init(&fa);
+	posix_spawn_file_actions_adddup2(&fa, in_pipe[0], STDIN_FILENO);
+	posix_spawn_file_actions_adddup2(&fa, out_pipe[1], STDOUT_FILENO);
+	posix_spawn_file_actions_adddup2(&fa, err_pipe[1], STDERR_FILENO);
+	posix_spawn_file_actions_addclose(&fa, in_pipe[0]);
+	posix_spawn_file_actions_addclose(&fa, in_pipe[1]);
+	posix_spawn_file_actions_addclose(&fa, out_pipe[0]);
+	posix_spawn_file_actions_addclose(&fa, out_pipe[1]);
+	posix_spawn_file_actions_addclose(&fa, err_pipe[0]);
+	posix_spawn_file_actions_addclose(&fa, err_pipe[1]);
+
+	/* Build child environment with SSHPASS when needed, without touching parent env. */
+	size_t env_count = 0;
+	for (char **e = environ; e && *e; e++) env_count++;
+	char **child_env = calloc(env_count + 3, sizeof(char *));
+	if (!child_env) oom();
+	size_t ei = 0;
+	for (char **e = environ; e && *e; e++) {
+		if (!strncmp(*e, "SSHPASS=", 8) || !strncmp(*e, "PATH=", 5)) continue;
+		child_env[ei++] = strdup(*e);
+	}
+	child_env[ei++] = strdup("PATH=/var/jb/usr/local/bin:/var/jb/usr/bin:/var/jb/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
+	if (t->has_password) {
+		size_t plen = strlen(t->password) + 9;
+		char *sp = malloc(plen);
+		if (!sp) oom();
+		snprintf(sp, plen, "SSHPASS=%s", t->password);
+		child_env[ei++] = sp;
+	}
+	child_env[ei] = NULL;
+
+	signal(SIGPIPE, SIG_IGN);
+	pid_t pid = 0;
+	int serr = posix_spawn(&pid, argv[0], &fa, NULL, (char *const *)argv, child_env);
+	posix_spawn_file_actions_destroy(&fa);
+	for (size_t i = 0; i < ei; i++) free(child_env[i]);
+	free(child_env);
+
+	close(in_pipe[0]);
+	close(out_pipe[1]);
+	close(err_pipe[1]);
+
+	if (serr != 0) {
+		close(in_pipe[1]);
+		close(out_pipe[0]);
+		close(err_pipe[0]);
+		*stderr_out = strdup(strerror(serr));
+		return -1;
+	}
+
+	int fds[3] = { in_pipe[1], out_pipe[0], err_pipe[0] };
+	for (int i = 0; i < 3; i++) {
+		int fl = fcntl(fds[i], F_GETFL, 0);
+		if (fl >= 0) fcntl(fds[i], F_SETFL, fl | O_NONBLOCK);
+	}
+	if (!stdin_data || stdin_len == 0) {
+		close(fds[0]);
+		fds[0] = -1;
+	}
+
+	dbuf ob = {0}, eb = {0};
+	size_t in_off = 0;
+	int elapsed_ms = 0;
+
+	while (fds[0] >= 0 || fds[1] >= 0 || fds[2] >= 0) {
+		struct pollfd pfds[3];
+		int idx_map[3];
+		nfds_t nfds = 0;
+		if (fds[0] >= 0) { pfds[nfds] = (struct pollfd){ fds[0], POLLOUT, 0 }; idx_map[nfds++] = 0; }
+		if (fds[1] >= 0) { pfds[nfds] = (struct pollfd){ fds[1], POLLIN, 0 }; idx_map[nfds++] = 1; }
+		if (fds[2] >= 0) { pfds[nfds] = (struct pollfd){ fds[2], POLLIN, 0 }; idx_map[nfds++] = 2; }
+		if (nfds == 0) break;
+
+		int pr = poll(pfds, nfds, 200);
+		if (pr < 0) {
+			if (errno == EINTR) continue;
+			break;
+		}
+		if (pr == 0) {
+			elapsed_ms += 200;
+			if (elapsed_ms >= SSH_TIMEOUT_MS) {
+				kill(pid, SIGKILL);
+				break;
+			}
+			continue;
+		}
+
+		for (nfds_t i = 0; i < nfds; i++) {
+			int k = idx_map[i];
+			short rev = pfds[i].revents;
+			if (!rev) continue;
+			if (k == 0) {
+				if (rev & (POLLERR | POLLHUP | POLLNVAL)) {
+					close(fds[0]);
+					fds[0] = -1;
+					continue;
+				}
+				ssize_t w = write(fds[0], stdin_data + in_off, stdin_len - in_off);
+				if (w > 0) {
+					in_off += (size_t)w;
+					if (in_off >= stdin_len) { close(fds[0]); fds[0] = -1; }
+				} else if (w < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+					close(fds[0]);
+					fds[0] = -1;
+				}
+			} else {
+				dbuf *dst = (k == 1) ? &ob : &eb;
+				char buf[4096];
+				for (;;) {
+					ssize_t r = read(fds[k], buf, sizeof buf);
+					if (r > 0) {
+						if (dst->len + (size_t)r < MAX_FILE_BYTES) {
+							dbuf_reserve(dst, (size_t)r);
+							memcpy(dst->buf + dst->len, buf, (size_t)r);
+							dst->len += (size_t)r;
+							dst->buf[dst->len] = '\0';
+						}
+					} else if (r == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+						close(fds[k]);
+						fds[k] = -1;
+						break;
+					} else {
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	for (int i = 0; i < 3; i++) if (fds[i] >= 0) close(fds[i]);
+
+	int status = 0;
+	waitpid(pid, &status, 0);
+	*stdout_out = ob.buf ? ob.buf : strdup("");
+	*stderr_out = eb.buf ? eb.buf : strdup("");
+	if (WIFEXITED(status)) return WEXITSTATUS(status);
+	return -1;
+}
+
+static void trim_trailing_ws(char *s) {
+	if (!s) return;
+	size_t n = strlen(s);
+	while (n > 0 && isspace((unsigned char)s[n - 1])) s[--n] = '\0';
+}
+
+static int run_rc_http_receive(const rc_target_t *t, const char *snapshot_json,
+                               int force_play, char **err_out) {
+	*err_out = NULL;
+	char curl_bin[PATH_MAX];
+	if (!find_bin("curl", curl_bin, sizeof curl_bin)) {
+		*err_out = strdup("curl is not installed");
+		return 1;
+	}
+	if (mkdir_p(dir_path) != 0) {
+		*err_out = strdup("cannot create work directory");
+		return 1;
+	}
+
+	char *b64 = b64url_encode((const unsigned char *)snapshot_json, strlen(snapshot_json));
+	dbuf cmd = {0};
+	dbuf_add(&cmd, "exec musicremote receive --json ");
+	dbuf_add(&cmd, force_play ? "--play " : "--pause ");
+	dbuf_add(&cmd, "--b64 ");
+	dbuf_add(&cmd, b64);
+	free(b64);
+
+	dbuf body = {0};
+	dbuf_add(&body, "{\"command\":");
+	dbuf_add_escaped(&body, cmd.buf);
+	dbuf_add(&body, "}");
+	free(cmd.buf);
+
+	char body_path[PATH_MAX], cfg_path[PATH_MAX], out_path[PATH_MAX], url[512];
+	unsigned r = (unsigned)arc4random();
+	snprintf(body_path, sizeof body_path, "%s/rc_body_%u.json", dir_path, r);
+	snprintf(cfg_path, sizeof cfg_path, "%s/rc_cfg_%u.txt", dir_path, r);
+	snprintf(out_path, sizeof out_path, "%s/rc_resp_%u.txt", dir_path, r);
+	snprintf(url, sizeof url, "http://%s:%d/api/command", t->host, t->port > 0 ? t->port : 8080);
+
+	int fd = open(body_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd < 0 || write(fd, body.buf, body.len) != (ssize_t)body.len) {
+		if (fd >= 0) close(fd);
+		free(body.buf);
+		unlink(body_path);
+		*err_out = strdup("cannot write request payload");
+		return 1;
+	}
+	close(fd);
+	free(body.buf);
+
+	dbuf cfg = {0};
+	dbuf_add(&cfg, "header = \"Content-Type: application/json\"\n");
+	if (t->token[0]) {
+		dbuf_add(&cfg, "header = \"Authorization: Bearer ");
+		for (const char *p = t->token; *p; p++) {
+			if (*p == '"' || *p == '\\') dbuf_addc(&cfg, '\\');
+			dbuf_addc(&cfg, *p);
+		}
+		dbuf_add(&cfg, "\"\n");
+	}
+	fd = open(cfg_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd < 0 || write(fd, cfg.buf, cfg.len) != (ssize_t)cfg.len) {
+		if (fd >= 0) close(fd);
+		free(cfg.buf);
+		unlink(body_path);
+		unlink(cfg_path);
+		*err_out = strdup("cannot write curl config");
+		return 1;
+	}
+	close(fd);
+	free(cfg.buf);
+
+	char *argv[] = {
+		curl_bin, (char *)"-sS", (char *)"--max-time", (char *)"6",
+		(char *)"-w", (char *)"%{http_code}",
+		(char *)"-K", cfg_path,
+		(char *)"--data-binary", NULL,
+		(char *)"-o", out_path,
+		url, NULL
+	};
+	char at_body[PATH_MAX + 2];
+	snprintf(at_body, sizeof at_body, "@%s", body_path);
+	argv[9] = at_body;
+
+	int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1};
+	if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+		unlink(body_path);
+		unlink(cfg_path);
+		*err_out = strdup("pipe failed");
+		return 1;
+	}
+	posix_spawn_file_actions_t fa;
+	posix_spawn_file_actions_init(&fa);
+	posix_spawn_file_actions_adddup2(&fa, out_pipe[1], STDOUT_FILENO);
+	posix_spawn_file_actions_adddup2(&fa, err_pipe[1], STDERR_FILENO);
+	posix_spawn_file_actions_addclose(&fa, out_pipe[0]);
+	posix_spawn_file_actions_addclose(&fa, out_pipe[1]);
+	posix_spawn_file_actions_addclose(&fa, err_pipe[0]);
+	posix_spawn_file_actions_addclose(&fa, err_pipe[1]);
+
+	pid_t pid = 0;
+	int serr = posix_spawn(&pid, curl_bin, &fa, NULL, argv, environ);
+	posix_spawn_file_actions_destroy(&fa);
+	close(out_pipe[1]);
+	close(err_pipe[1]);
+
+	char code_buf[32] = "", curl_err[512] = "";
+	if (serr == 0) {
+		ssize_t rn = read(out_pipe[0], code_buf, sizeof code_buf - 1);
+		if (rn > 0) code_buf[rn] = '\0';
+		rn = read(err_pipe[0], curl_err, sizeof curl_err - 1);
+		if (rn > 0) curl_err[rn] = '\0';
+		int st = 0;
+		waitpid(pid, &st, 0);
+	}
+	close(out_pipe[0]);
+	close(err_pipe[0]);
+
+	char *resp_body = read_text_file(out_path);
+	unlink(body_path);
+	unlink(cfg_path);
+	unlink(out_path);
+
+	long http_code = strtol(code_buf, NULL, 10);
+	if (serr != 0 || http_code == 0) {
+		trim_trailing_ws(curl_err);
+		char msg[768];
+		snprintf(msg, sizeof msg, "could not reach %s (%s)", t->name,
+		         curl_err[0] ? curl_err : "check Web UI is enabled");
+		*err_out = strdup(msg);
+		free(resp_body);
+		return 1;
+	}
+	if (http_code == 403) {
+		char msg[512];
+		if (resp_body && strstr(resp_body, "disabled")) {
+			snprintf(msg, sizeof msg, "RemoteCompanion Web UI is disabled on %s", t->name);
+		} else {
+			snprintf(msg, sizeof msg,
+			         "Remote RC client \"%s\" requires its Web UI API token (or add it under SSH Hosts)",
+			         t->name);
+		}
+		*err_out = strdup(msg);
+		free(resp_body);
+		return 1;
+	}
+	if (http_code < 200 || http_code >= 300) {
+		char msg[512];
+		snprintf(msg, sizeof msg, "%s returned HTTP %ld", t->name, http_code);
+		*err_out = strdup(msg);
+		free(resp_body);
+		return 1;
+	}
+	free(resp_body);
+	return 0;
+}
+
+static int resolve_local_track(sqlite3 *h, const char *title, const char *artist,
+                               const char *album, long long *out_store,
+                               sqlite3_int64 *out_pid) {
+	*out_store = 0;
+	*out_pid = 0;
+	if (!h || !title || !*title) return 0;
+	ensure_schema(h);
+	const char *tcol = sch.item_title ? "i.title" : "e.title";
+	const char *tj = sch.item_title ? "" : " LEFT JOIN item_extra e ON e.item_pid = i.item_pid";
+	const char *acol = sch.item_artist ? "ia.item_artist" : sch.person_name ? "p.name" : "''";
+	const char *aj = sch.item_artist ? " LEFT JOIN item_artist ia ON ia.item_artist_pid = i.item_artist_pid"
+	                                 : sch.person_name ? " LEFT JOIN person p ON p.person_pid = i.item_artist_pid" : "";
+	char sql[MAX_SQL];
+	snprintf(sql, sizeof sql,
+	         "SELECT i.item_pid,"
+	         " coalesce(nullif(s.subscription_store_item_id,0), s.asset_store_item_id, 0),"
+	         " coalesce(nullif(%s,''), aa.album_artist, ''),"
+	         " coalesce(a.album, '')"
+	         " FROM item i%s%s"
+	         " LEFT JOIN item_store s ON s.item_pid = i.item_pid"
+	         " LEFT JOIN album a ON a.album_pid = i.album_pid"
+	         " LEFT JOIN album_artist aa ON aa.album_artist_pid = i.album_artist_pid"
+	         " WHERE i.media_type = 8 AND %s = ?1 COLLATE NOCASE"
+	         " LIMIT 32",
+	         acol, tj, aj, tcol);
+
+	sqlite3_stmt *st = prepare(h, sql);
+	sqlite3_bind_text(st, 1, title, -1, SQLITE_TRANSIENT);
+	int best_score = -1;
+	while (sqlite3_step(st) == SQLITE_ROW) {
+		sqlite3_int64 pid = sqlite3_column_int64(st, 0);
+		long long sid = (long long)sqlite3_column_int64(st, 1);
+		const char *ra = (const char *)sqlite3_column_text(st, 2);
+		const char *ral = (const char *)sqlite3_column_text(st, 3);
+		int score = 0;
+		if (artist && *artist && ra && ieq(ra, artist)) score += 2;
+		else if (artist && *artist && ra && icontains(ra, artist)) score += 1;
+		if (album && *album && ral && ieq(ral, album)) score += 2;
+		if (sid > 0) score += 1;
+		if (score > best_score) {
+			best_score = score;
+			*out_pid = pid;
+			*out_store = sid;
+		}
+	}
+	sqlite3_finalize(st);
+	return best_score >= 0;
+}
+
+static int apply_handoff_payload(const char *snap, int force_play, int as_json, char **resp_out) {
+	*resp_out = NULL;
+	char state[32] = "", shuffle[32] = "off", repeat[32] = "none";
+	char title[256] = "", artist[256] = "", album[256] = "", top_store[24] = "";
+	double elapsed = 0.0, qidx_d = -1.0;
+
+	json_str(snap, "state", state, sizeof state);
+	json_str(snap, "shuffle", shuffle, sizeof shuffle);
+	json_str(snap, "repeat", repeat, sizeof repeat);
+	json_str(snap, "title", title, sizeof title);
+	json_str(snap, "artist", artist, sizeof artist);
+	json_str(snap, "album", album, sizeof album);
+	json_str(snap, "storeID", top_store, sizeof top_store);
+	json_num(snap, "elapsed", &elapsed);
+	json_num(snap, "queueIndex", &qidx_d);
+	if (elapsed < 0.0 || !isfinite(elapsed)) elapsed = 0.0;
+
+	int should_play = 1;
+	if (force_play >= 0) {
+		should_play = force_play;
+	} else {
+		int explicit_play = 0;
+		if (json_bool(snap, "play", &explicit_play)) should_play = explicit_play;
+		else should_play = !strcmp(state, "playing") ? 1 : 0;
+	}
+
+	int qidx = (qidx_d >= 0.0) ? (int)qidx_d : -1;
+	long long store_ids_arr[MAX_STORE_IDS];
+	int n_store = 0, start_store_pos = -1;
+	sqlite3_int64 pid_arr[MAX_STORE_IDS];
+	int n_pid = 0, start_pid_pos = -1;
+	sqlite3 *local_db = NULL;
+
+	const char *queue = json_value(snap, "queue");
+	if (queue && *queue == '[') {
+		const char *p = queue + 1;
+		int idx = 0;
+		for (;;) {
+			p = skip_ws(p);
+			if (*p == ',') { p++; continue; }
+			if (*p != '{') break;
+			const char *end = skip_value(p);
+			if (!end) break;
+
+			char qsid[24] = "", qt[256] = "", qa[256] = "", qal[256] = "";
+			json_str(p, "storeID", qsid, sizeof qsid);
+			long long sid = qsid[0] ? strtoll(qsid, NULL, 10) : 0;
+			sqlite3_int64 pid = 0;
+
+			if (sid <= 0) {
+				json_str(p, "title", qt, sizeof qt);
+				json_str(p, "artist", qa, sizeof qa);
+				json_str(p, "album", qal, sizeof qal);
+				if (qt[0]) {
+					if (!local_db) local_db = open_db();
+					resolve_local_track(local_db, qt, qa, qal, &sid, &pid);
+				}
+			}
+
+			if (sid > 0 && n_store < MAX_STORE_IDS) {
+				if (idx == qidx) start_store_pos = n_store;
+				store_ids_arr[n_store++] = sid;
+			} else if (pid != 0 && n_pid < MAX_STORE_IDS) {
+				if (idx == qidx) start_pid_pos = n_pid;
+				pid_arr[n_pid++] = pid;
+			}
+			idx++;
+			p = end;
+		}
+	}
+
+	long long top_sid = top_store[0] ? strtoll(top_store, NULL, 10) : 0;
+	if (n_store == 0 && n_pid == 0) {
+		sqlite3_int64 pid = 0;
+		if (top_sid <= 0 && title[0]) {
+			if (!local_db) local_db = open_db();
+			resolve_local_track(local_db, title, artist, album, &top_sid, &pid);
+		}
+		if (top_sid > 0) {
+			store_ids_arr[0] = top_sid;
+			n_store = 1;
+			start_store_pos = 0;
+		} else if (pid != 0) {
+			pid_arr[0] = pid;
+			n_pid = 1;
+			start_pid_pos = 0;
+		}
+	}
+	if (local_db) close_db(local_db);
+
+	if (n_store == 0 && n_pid == 0) {
+		local_fail("that song is not playable on this device");
+	}
+
+	dbuf args = {0};
+	dbuf_add(&args, "{");
+	if (n_store > 0) {
+		int slice_from = 0;
+		if (start_store_pos < 0 && top_sid > 0) {
+			start_store_pos = index_of_id(store_ids_arr, n_store, top_sid);
+		}
+		if (start_store_pos < 0) start_store_pos = 0;
+		long long start_id = store_ids_arr[start_store_pos];
+		/* startItemID matches the first occurrence; slice if the same track appeared earlier. */
+		for (int i = 0; i < start_store_pos; i++) {
+			if (store_ids_arr[i] == start_id) { slice_from = start_store_pos; break; }
+		}
+		dbuf_add(&args, "\"ids\":[");
+		for (int i = slice_from; i < n_store; i++) {
+			dbuf_addf(&args, "%s\"%lld\"", i > slice_from ? "," : "", store_ids_arr[i]);
+		}
+		dbuf_addf(&args, "],\"start\":\"%lld\",", start_id);
+	} else {
+		if (start_pid_pos < 0) start_pid_pos = 0;
+		char pbuf[24];
+		dbuf_add(&args, "\"pids\":[");
+		for (int i = 0; i < n_pid; i++) {
+			pid_string(pid_arr[i], pbuf, sizeof pbuf);
+			dbuf_addf(&args, "%s\"%s\"", i ? "," : "", pbuf);
+		}
+		pid_string(pid_arr[start_pid_pos], pbuf, sizeof pbuf);
+		dbuf_addf(&args, "],\"start\":\"%s\",", pbuf);
+	}
+	dbuf_addf(&args, "\"elapsed\":%.3f,\"play\":%s,\"shuffle\":",
+	          elapsed, should_play ? "true" : "false");
+	dbuf_add_escaped(&args, shuffle[0] ? shuffle : "off");
+	dbuf_add(&args, ",\"repeat\":");
+	dbuf_add_escaped(&args, repeat[0] ? repeat : "none");
+	dbuf_add(&args, "}");
+
+	request_t req = { "handoff", args.buf };
+	int rc = exec_request(&req, as_json, resp_out);
+	free(args.buf);
+	return rc;
+}
+
+static int cmd_snapshot(int as_json) {
+	request_t req = { "snapshot", "{}" };
+	char *data = NULL;
+	int rc = exec_request(&req, as_json, &data);
+	if (rc != 0) return rc;
+	if (as_json) {
+		printf("%s\n", data);
+	} else {
+		print_status(data);
+	}
+	free(data);
+	return 0;
+}
+
+static int cmd_receive(int ac, char **av, int as_json) {
+	int force_play = -1;
+	const char *b64_arg = NULL, *raw_arg = NULL;
+	for (int i = 1; i < ac; i++) {
+		if (!strcmp(av[i], "--play")) force_play = 1;
+		else if (!strcmp(av[i], "--pause")) force_play = 0;
+		else if (!strcmp(av[i], "--match")) force_play = -1;
+		else if (!strcmp(av[i], "--b64")) {
+			if (++i >= ac) return usage_error("--b64 needs a payload");
+			b64_arg = av[i];
+		} else if (!strcmp(av[i], "--data")) {
+			if (++i >= ac) return usage_error("--data needs JSON");
+			raw_arg = av[i];
+		} else {
+			return usage_error("receive takes --play, --pause, --match, --b64 or --data");
+		}
+	}
+
+	char *owned = NULL;
+	const char *snap = NULL;
+	if (b64_arg) {
+		owned = b64_decode(b64_arg, NULL);
+		if (!owned) local_fail("invalid base64 handoff payload");
+		snap = owned;
+	} else if (raw_arg) {
+		snap = raw_arg;
+	} else {
+		owned = read_stdin_all(MAX_FILE_BYTES);
+		snap = owned;
+	}
+
+	const char *ws = skip_ws(snap);
+	if (*ws != '{') {
+		free(owned);
+		local_fail("handoff payload is not a JSON object");
+	}
+
+	char *resp = NULL;
+	int rc = apply_handoff_payload(ws, force_play, as_json, &resp);
+	free(owned);
+	if (rc != 0) return rc;
+	if (as_json) printf("%s\n", resp);
+	else print_status(resp);
+	free(resp);
+	return 0;
+}
+
+static char *inject_play_flag(const char *snap, int should_play) {
+	const char *p = skip_ws(snap);
+	if (*p != '{') return strdup(snap);
+	dbuf d = {0};
+	dbuf_addf(&d, "{\"play\":%s,", should_play ? "true" : "false");
+	dbuf_add(&d, p + 1);
+	return d.buf;
+}
+
+static void print_transfer_result(const char *verb, const char *peer, const char *title,
+                                  const char *artist, int played, int paused_peer, int as_json) {
+	if (as_json) {
+		dbuf d = {0};
+		dbuf_add(&d, "{\"ok\":true,\"target\":");
+		dbuf_add_escaped(&d, peer);
+		dbuf_add(&d, ",\"title\":");
+		dbuf_add_escaped(&d, title);
+		dbuf_add(&d, ",\"artist\":");
+		dbuf_add_escaped(&d, artist);
+		dbuf_addf(&d, ",\"played\":%s,\"pausedSource\":%s}",
+		          played ? "true" : "false", paused_peer ? "true" : "false");
+		printf("%s\n", d.buf);
+		free(d.buf);
+		return;
+	}
+	printf("%s %s", verb, peer);
+	if (title && *title) printf(" — %s", title);
+	if (!played) printf(" (paused)");
+	putchar('\n');
+}
+
+static int cmd_pull(int ac, char **av, int as_json) {
+	addon_prefs_t prefs;
+	read_addon_prefs(&prefs);
+	char target_buf[256] = "";
+	double overlap = prefs.overlap;
+	int force_play = -1;
+
+	for (int i = 1; i < ac; i++) {
+		if (!strcmp(av[i], "--from") || !strcmp(av[i], "--to")) {
+			if (++i >= ac) return usage_error("--from needs a device name or host");
+			snprintf(target_buf, sizeof target_buf, "%s", av[i]);
+		} else if (!strcmp(av[i], "--overlap")) {
+			if (++i >= ac) return usage_error("--overlap needs seconds");
+			char *end = NULL;
+			double v = strtod(av[i], &end);
+			if (end == av[i] || *end || !isfinite(v) || v < 0.0 || v > 5.0)
+				return usage_error("--overlap must be between 0 and 5");
+			overlap = v;
+		} else if (!strcmp(av[i], "--play")) {
+			force_play = 1;
+		} else if (!strcmp(av[i], "--pause")) {
+			force_play = 0;
+		} else if (av[i][0] == '-' && av[i][1] == '-') {
+			return usage_error("unknown flag for pull");
+		} else if (query_add(target_buf, sizeof target_buf, av[i]) != 0) {
+			return usage_error("target name is too long");
+		}
+	}
+
+	rc_target_t src;
+	resolve_target(target_buf[0] ? target_buf : NULL, &prefs, 1, &src);
+
+	char *snap = NULL, *serr = NULL;
+	int ssh_rc = run_ssh_command(&src, "musicremote snapshot --json", NULL, 0, &snap, &serr);
+	if (ssh_rc != 0) {
+		trim_trailing_ws(serr);
+		trim_trailing_ws(snap);
+		const char *why = (serr && *serr) ? serr : (snap && *snap) ? snap : "SSH command failed";
+		char msg[768];
+		snprintf(msg, sizeof msg, "%s: %s", src.name, why);
+		free(snap);
+		free(serr);
+		local_fail("%s", msg);
+	}
+	free(serr);
+
+	char state[32] = "", title[256] = "", artist[256] = "";
+	json_str(snap, "state", state, sizeof state);
+	json_str(snap, "title", title, sizeof title);
+	json_str(snap, "artist", artist, sizeof artist);
+	int was_playing = !strcmp(state, "playing");
+	int target_play = force_play >= 0 ? force_play : (was_playing || prefs.always_play);
+
+	char *resp = NULL;
+	int lrc = apply_handoff_payload(snap, target_play, as_json, &resp);
+	free(snap);
+	if (lrc != 0) return lrc;
+	free(resp);
+
+	if (was_playing) {
+		if (overlap > 0.0) usleep((useconds_t)(overlap * 1000000.0));
+		char *pout = NULL, *perr = NULL;
+		(void)run_ssh_command(&src, "musicremote pause", NULL, 0, &pout, &perr);
+		free(pout);
+		free(perr);
+	}
+
+	print_transfer_result("Pulled from", src.name, title, artist, target_play, was_playing, as_json);
+	return 0;
+}
+
+static int cmd_transfer(int ac, char **av, int as_json) {
+	addon_prefs_t prefs;
+	read_addon_prefs(&prefs);
+	char target_buf[256] = "";
+	double overlap = prefs.overlap;
+	int force_play = -1;
+
+	for (int i = 1; i < ac; i++) {
+		if (!strcmp(av[i], "--from")) {
+			/* Delegate transfer --from <source> cleanly to pull. */
+			return cmd_pull(ac, av, as_json);
+		} else if (!strcmp(av[i], "--to")) {
+			if (++i >= ac) return usage_error("--to needs a device name or host");
+			snprintf(target_buf, sizeof target_buf, "%s", av[i]);
+		} else if (!strcmp(av[i], "--overlap")) {
+			if (++i >= ac) return usage_error("--overlap needs seconds");
+			char *end = NULL;
+			double v = strtod(av[i], &end);
+			if (end == av[i] || *end || !isfinite(v) || v < 0.0 || v > 5.0)
+				return usage_error("--overlap must be between 0 and 5");
+			overlap = v;
+		} else if (!strcmp(av[i], "--play")) {
+			force_play = 1;
+		} else if (!strcmp(av[i], "--pause")) {
+			force_play = 0;
+		} else if (av[i][0] == '-' && av[i][1] == '-') {
+			return usage_error("expected --to, --from, --overlap, --play or --pause");
+		} else if (query_add(target_buf, sizeof target_buf, av[i]) != 0) {
+			return usage_error("target name is too long");
+		}
+	}
+
+	rc_target_t dst;
+	resolve_target(target_buf[0] ? target_buf : NULL, &prefs, 0, &dst);
+
+	request_t sreq = { "snapshot", "{}" };
+	char *snap = NULL;
+	int rc = exec_request(&sreq, as_json, &snap);
+	if (rc != 0) return rc;
+
+	char state[32] = "", title[256] = "", artist[256] = "";
+	json_str(snap, "state", state, sizeof state);
+	json_str(snap, "title", title, sizeof title);
+	json_str(snap, "artist", artist, sizeof artist);
+	int was_playing = !strcmp(state, "playing");
+	int target_play = force_play >= 0 ? force_play : (was_playing || prefs.always_play);
+
+	char *payload = inject_play_flag(snap, target_play);
+	free(snap);
+
+	if (dst.kind == TGT_SSH) {
+		char *rout = NULL, *rerr = NULL;
+		const char *rcmd = target_play
+			? "musicremote receive --json --play"
+			: "musicremote receive --json --pause";
+		int ssh_rc = run_ssh_command(&dst, rcmd, payload, strlen(payload), &rout, &rerr);
+		free(payload);
+		if (ssh_rc != 0) {
+			trim_trailing_ws(rerr);
+			trim_trailing_ws(rout);
+			const char *why = (rerr && *rerr) ? rerr : (rout && *rout) ? rout : "transfer failed on target";
+			char msg[768];
+			snprintf(msg, sizeof msg, "%s: %s", dst.name, why);
+			free(rout);
+			free(rerr);
+			local_fail("%s", msg);
+		}
+		free(rout);
+		free(rerr);
+		if (was_playing && overlap > 0.0) {
+			usleep((useconds_t)(overlap * 1000000.0));
+		}
+	} else {
+		char *herr = NULL;
+		int hrc = run_rc_http_receive(&dst, payload, target_play, &herr);
+		free(payload);
+		if (hrc != 0) {
+			char msg[768];
+			snprintf(msg, sizeof msg, "%s", herr ? herr : "Remote RC request failed");
+			free(herr);
+			local_fail("%s", msg);
+		}
+		/* /api/command returns immediately on accept; wait for the target to buffer and start. */
+		if (was_playing) {
+			double wait_s = overlap + 0.8;
+			if (wait_s > 0.0) usleep((useconds_t)(wait_s * 1000000.0));
+		}
+	}
+
+	if (was_playing) {
+		request_t preq = { "pause", "{}" };
+		char *pdata = NULL;
+		if (exec_request(&preq, 0, &pdata) == 0) free(pdata);
+	}
+
+	print_transfer_result("Sent to", dst.name, title, artist, target_play, was_playing, as_json);
+	return 0;
+}
+
 int main(int argc, char **argv) {
 	char **av = malloc(sizeof(char *) * (size_t)(argc + 1));
 	if (!av) oom();
@@ -1585,6 +2846,13 @@ int main(int argc, char **argv) {
 	if (!strcmp(av[0], "state")) return cmd_state(as_json);
 	if (!strcmp(av[0], "count")) return cmd_count(ac > 1 ? av[1] : "", as_json);
 	if (!strcmp(av[0], "love")) return cmd_love(ac, av, as_json);
+	if (!strcmp(av[0], "snapshot")) {
+		if (ac != 1) return usage_error("this command takes no arguments");
+		return cmd_snapshot(as_json);
+	}
+	if (!strcmp(av[0], "receive")) return cmd_receive(ac, av, as_json);
+	if (!strcmp(av[0], "transfer")) return cmd_transfer(ac, av, as_json);
+	if (!strcmp(av[0], "pull")) return cmd_pull(ac, av, as_json);
 	if (!strcmp(av[0], "current") || !strcmp(av[0], "queue"))
 		return cmd_current(ac, av, as_json);
 	if (!strcmp(av[0], "library")) {

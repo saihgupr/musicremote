@@ -19,11 +19,13 @@ without a respring. `rc addons` lists it as `MusicRemote (music)`.
 
 The add-on is deliberately small, because the phone UI is buttons. It exposes
 play, pause, play or pause, next, previous, queue this artist, queue this album,
-add this artist to the queue, add this album to the queue, and love the playing
-song. One condition, player state (Playing / Paused / Stopped), covers
-automations. Everything else (name queues, search, library counts, volume,
-queue variants) stays in the CLI, where it is actually useful. Check the
-condition with `rc addons check addon:music:state`.
+add this artist to the queue, add this album to the queue, love the playing
+song, transfer playback, and pull playback. One condition, player state
+(Playing / Paused / Stopped), covers automations, and Settings > Add-ons >
+MusicRemote configures the transfer target, overlap delay, and paused behavior.
+Everything else (name queues, search, library counts, volume, queue variants)
+stays in the CLI, where it is actually useful. Check the condition with
+`rc addons check addon:music:state`.
 
 <p>
   <img src="images/cli.png" width="560" alt="musicremote CLI" />
@@ -96,6 +98,8 @@ musicremote love                        # love the playing song
 musicremote love off                    # take it back
 musicremote love toggle                 # flip it
 musicremote love status                 # loved or not loved
+musicremote transfer [target]           # hand off song, queue, position & state
+musicremote pull [source]               # pull playback from another device
 musicremote --json status
 ```
 
@@ -107,7 +111,20 @@ rc music queue artist
 rc music queue album
 rc music append album
 rc music love
+rc music transfer
+rc music pull
 ```
+
+`transfer` and `pull` use the **Transfer Target** configured in RemoteCompanion
+(Settings > Add-ons > MusicRemote, defaulting to `Auto` which selects the first
+iOS device in RemoteCompanion's SSH Hosts or Remote RC Clients). Both pass the
+current track, queue (up to 600 items), playback position, shuffle/repeat modes,
+and play/pause state. When the source device is playing, it keeps playing briefly
+(1 second by default, configurable as **Handoff Overlap**) while the receiving
+device starts, then pauses the source for a seamless switch. Target devices with
+only a Remote RC Client (no SSH Host) need their Web UI enabled and, if an API
+token is set, that token saved on the client; `pull` requires SSH access to the
+source device.
 
 Quotes are optional. All words after the subcommand form the query, so
 `album Kind of Blue` and `album "Kind of Blue"` are the same.

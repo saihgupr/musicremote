@@ -33,8 +33,8 @@ CLI can ignore a stale response from an earlier call.
 | action | args | notes |
 |---|---|---|
 | `status` | none | now playing snapshot |
-| `snapshot` | none | full now playing state + up to 600 queue items for handoff |
-| `handoff` | `ids`/`pids`, `start`, `elapsed`, `play`, `shuffle`, `repeat` | apply transferred queue and player state |
+| `snapshot` | none | full now playing state + up to 600 queue items (or radio station metadata) for handoff |
+| `handoff` | `ids`/`pids`/`stationID`, `start`, `elapsed`, `play`, `shuffle`, `repeat` | apply transferred queue or radio station and player state |
 | `play` / `pause` / `toggle` | none | |
 | `next` / `prev` | none | |
 | `queueByStore` | `ids`, `mode` | **preferred.** Apple Music catalog IDs, in play order, decimals as strings |

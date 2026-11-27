@@ -41,7 +41,7 @@ extern char **environ;
 #define LOCK_WAIT_MS    2000
 #define POLL_MS         50
 #define ATTEMPT_MS      3000
-#define MAX_ATTEMPTS    3
+#define MAX_ATTEMPTS    4
 #define DEFAULT_LIMIT   20
 #define SEARCH_MAX      50
 #define MAX_QUERY       400
@@ -2431,6 +2431,7 @@ static int apply_handoff_payload(const char *snap, int force_play, int as_json, 
 	*resp_out = NULL;
 	char state[32] = "", shuffle[32] = "off", repeat[32] = "none";
 	char title[256] = "", artist[256] = "", album[256] = "", top_store[24] = "";
+	char station_id[128] = "", station_numeric[32] = "", station_hash[128] = "", station_name[256] = "";
 	double elapsed = 0.0, qidx_d = -1.0;
 
 	json_str(snap, "state", state, sizeof state);
@@ -2440,6 +2441,10 @@ static int apply_handoff_payload(const char *snap, int force_play, int as_json, 
 	json_str(snap, "artist", artist, sizeof artist);
 	json_str(snap, "album", album, sizeof album);
 	json_str(snap, "storeID", top_store, sizeof top_store);
+	json_str(snap, "stationID", station_id, sizeof station_id);
+	json_str(snap, "stationNumericID", station_numeric, sizeof station_numeric);
+	json_str(snap, "stationHash", station_hash, sizeof station_hash);
+	json_str(snap, "stationName", station_name, sizeof station_name);
 	json_num(snap, "elapsed", &elapsed);
 	json_num(snap, "queueIndex", &qidx_d);
 	if (elapsed < 0.0 || !isfinite(elapsed)) elapsed = 0.0;
@@ -2451,6 +2456,37 @@ static int apply_handoff_payload(const char *snap, int force_play, int as_json, 
 		int explicit_play = 0;
 		if (json_bool(snap, "play", &explicit_play)) should_play = explicit_play;
 		else should_play = !strcmp(state, "playing") ? 1 : 0;
+	}
+
+	if (station_id[0] || station_numeric[0]) {
+		dbuf args = {0};
+		dbuf_add(&args, "{");
+		if (station_id[0]) {
+			dbuf_add(&args, "\"stationID\":");
+			dbuf_add_escaped(&args, station_id);
+			dbuf_add(&args, ",");
+		}
+		if (station_numeric[0]) {
+			dbuf_add(&args, "\"stationNumericID\":");
+			dbuf_add_escaped(&args, station_numeric);
+			dbuf_add(&args, ",");
+		}
+		if (station_hash[0]) {
+			dbuf_add(&args, "\"stationHash\":");
+			dbuf_add_escaped(&args, station_hash);
+			dbuf_add(&args, ",");
+		}
+		if (station_name[0]) {
+			dbuf_add(&args, "\"stationName\":");
+			dbuf_add_escaped(&args, station_name);
+			dbuf_add(&args, ",");
+		}
+		dbuf_addf(&args, "\"play\":%s}", should_play ? "true" : "false");
+
+		request_t req = { "handoff", args.buf };
+		int rc = exec_request(&req, as_json, resp_out);
+		free(args.buf);
+		return rc;
 	}
 
 	int qidx = (qidx_d >= 0.0) ? (int)qidx_d : -1;
@@ -2701,10 +2737,11 @@ static int cmd_pull(int ac, char **av, int as_json) {
 	}
 	free(serr);
 
-	char state[32] = "", title[256] = "", artist[256] = "";
+	char state[32] = "", title[256] = "", artist[256] = "", station[256] = "";
 	json_str(snap, "state", state, sizeof state);
 	json_str(snap, "title", title, sizeof title);
 	json_str(snap, "artist", artist, sizeof artist);
+	json_str(snap, "stationName", station, sizeof station);
 	int was_playing = !strcmp(state, "playing");
 	int target_play = force_play >= 0 ? force_play : (was_playing || prefs.always_play);
 
@@ -2722,7 +2759,8 @@ static int cmd_pull(int ac, char **av, int as_json) {
 		free(perr);
 	}
 
-	print_transfer_result("Pulled from", src.name, title, artist, target_play, was_playing, as_json);
+	const char *label = title[0] ? title : station;
+	print_transfer_result("Pulled from", src.name, label, artist, target_play, was_playing, as_json);
 	return 0;
 }
 
@@ -2766,10 +2804,11 @@ static int cmd_transfer(int ac, char **av, int as_json) {
 	int rc = exec_request(&sreq, as_json, &snap);
 	if (rc != 0) return rc;
 
-	char state[32] = "", title[256] = "", artist[256] = "";
+	char state[32] = "", title[256] = "", artist[256] = "", station[256] = "";
 	json_str(snap, "state", state, sizeof state);
 	json_str(snap, "title", title, sizeof title);
 	json_str(snap, "artist", artist, sizeof artist);
+	json_str(snap, "stationName", station, sizeof station);
 	int was_playing = !strcmp(state, "playing");
 	int target_play = force_play >= 0 ? force_play : (was_playing || prefs.always_play);
 
@@ -2821,7 +2860,8 @@ static int cmd_transfer(int ac, char **av, int as_json) {
 		if (exec_request(&preq, 0, &pdata) == 0) free(pdata);
 	}
 
-	print_transfer_result("Sent to", dst.name, title, artist, target_play, was_playing, as_json);
+	const char *label = title[0] ? title : station;
+	print_transfer_result("Sent to", dst.name, label, artist, target_play, was_playing, as_json);
 	return 0;
 }
 

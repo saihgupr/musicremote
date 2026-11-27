@@ -8,6 +8,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <MediaPlayer/MediaPlayer.h>
+#import <dlfcn.h>
 #import <stdio.h>
 #import <unistd.h>
 
@@ -270,6 +271,126 @@ static NSDictionary *MRStatusDict(void) {
     return data;
 }
 
+typedef void (*MRGetNowPlayingInfoFn)(dispatch_queue_t queue, void (^completion)(CFDictionaryRef info));
+typedef void *(*MRQueueCreateFn)(CFAllocatorRef allocator, int type);
+typedef void (*MRQueueDestroyFn)(void *queue);
+typedef void (*MRQueueSetIntFn)(void *queue, int value);
+typedef void (*MRQueueSetInt64Fn)(void *queue, int64_t value);
+typedef void (*MRQueueSetStrFn)(void *queue, CFStringRef value);
+typedef void (*MRQueueSetBoolFn)(void *queue, Boolean value);
+typedef void (*MRSetSystemQueueFn)(void *queue, dispatch_queue_t completionQueue, void (^completion)(int error));
+
+static MRGetNowPlayingInfoFn mrGetNowPlayingInfo = NULL;
+static MRQueueCreateFn mrQueueCreate = NULL;
+static MRQueueDestroyFn mrQueueDestroy = NULL;
+static MRQueueSetIntFn mrQueueSetIDType = NULL;
+static MRQueueSetStrFn mrQueueSetStringID = NULL;
+static MRQueueSetInt64Fn mrQueueSetIntPID = NULL;
+static MRQueueSetBoolFn mrQueueSetImmediate = NULL;
+static MRQueueSetIntFn mrQueueSetReplace = NULL;
+static MRSetSystemQueueFn mrSetSystemQueue = NULL;
+
+static void MRLoadMediaRemote(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        void *handle = dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_LAZY);
+        if (handle == NULL) return;
+        mrGetNowPlayingInfo = (MRGetNowPlayingInfoFn)dlsym(handle, "MRMediaRemoteGetNowPlayingInfo");
+        mrQueueCreate = (MRQueueCreateFn)dlsym(handle, "MRSystemAppPlaybackQueueCreate");
+        mrQueueDestroy = (MRQueueDestroyFn)dlsym(handle, "MRSystemAppPlaybackQueueDestroy");
+        mrQueueSetIDType = (MRQueueSetIntFn)dlsym(handle, "MRSystemAppPlaybackQueueSetRadioStationIDType");
+        mrQueueSetStringID = (MRQueueSetStrFn)dlsym(handle, "MRSystemAppPlaybackQueueSetRadioStationStringIdentifier");
+        mrQueueSetIntPID = (MRQueueSetInt64Fn)dlsym(handle, "MRSystemAppPlaybackQueueSetRadioStationIntegerPID");
+        mrQueueSetImmediate = (MRQueueSetBoolFn)dlsym(handle, "MRSystemAppPlaybackQueueSetIsRequestingImmediatePlayback");
+        mrQueueSetReplace = (MRQueueSetIntFn)dlsym(handle, "MRSystemAppPlaybackQueueSetReplaceIntent");
+        mrSetSystemQueue = (MRSetSystemQueueFn)dlsym(handle, "MRMediaRemoteSetSystemAppPlaybackQueue");
+    });
+}
+
+static NSDictionary *MRCopyNowPlayingInfo(void) {
+    MRLoadMediaRemote();
+    if (mrGetNowPlayingInfo == NULL) return nil;
+    __block NSDictionary *result = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    mrGetNowPlayingInfo(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(CFDictionaryRef info) {
+        if (info != NULL) {
+            result = [(__bridge NSDictionary *)info copy];
+        }
+        dispatch_semaphore_signal(sem);
+    });
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)));
+    return result;
+}
+
+static NSString *MRDictString(NSDictionary *dict, NSString *key) {
+    if (![dict isKindOfClass:[NSDictionary class]]) return @"";
+    id val = dict[key];
+    return [val isKindOfClass:[NSString class]] ? val : @"";
+}
+
+static long long MRDictInt64(NSDictionary *dict, NSString *key) {
+    if (![dict isKindOfClass:[NSDictionary class]]) return 0;
+    id val = dict[key];
+    return [val respondsToSelector:@selector(longLongValue)] ? [val longLongValue] : 0;
+}
+
+static BOOL MRStartRadioStation(NSString *stationID, long long numericID, BOOL shouldPlay, NSString **errorOut) {
+    MRLoadMediaRemote();
+    if (mrQueueCreate != NULL && mrQueueDestroy != NULL && mrQueueSetIDType != NULL &&
+        mrQueueSetImmediate != NULL && mrQueueSetReplace != NULL && mrSetSystemQueue != NULL &&
+        ((stationID.length > 0 && mrQueueSetStringID != NULL) ||
+         (numericID != 0 && mrQueueSetIntPID != NULL))) {
+        void *q = mrQueueCreate(NULL, 2); // 2 = RadioStation
+        if (q != NULL) {
+            if (stationID.length > 0) {
+                mrQueueSetIDType(q, 2); // 2 = StationStringID
+                mrQueueSetStringID(q, (__bridge CFStringRef)stationID);
+            } else {
+                mrQueueSetIDType(q, 1); // 1 = IntegerPID
+                mrQueueSetIntPID(q, (int64_t)numericID);
+            }
+            mrQueueSetImmediate(q, shouldPlay ? true : false);
+            mrQueueSetReplace(q, 1); // 1 = Replace
+
+            dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+            __block int mrErr = -1;
+            mrSetSystemQueue(q, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(int err) {
+                mrErr = err;
+                dispatch_semaphore_signal(sem);
+            });
+            long timedOut = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)));
+            mrQueueDestroy(q);
+            if (timedOut == 0 && mrErr == 0) {
+                return YES;
+            }
+            if (errorOut != NULL) {
+                *errorOut = timedOut != 0
+                    ? @"radio handoff timed out"
+                    : [NSString stringWithFormat:@"radio handoff failed (error %d)", mrErr];
+            }
+            NSLog(@"[MusicRemote] MRMediaRemoteSetSystemAppPlaybackQueue failed (timeout=%ld err=%d)", timedOut, mrErr);
+        }
+    }
+
+    if (stationID.length > 0) {
+        NSDictionary *paramsDict = @{@"id": stationID, @"kind": @"radioStation", @"isLibrary": @NO};
+        MPMusicPlayerPlayParameters *playParams = [[MPMusicPlayerPlayParameters alloc] initWithDictionary:paramsDict];
+        if (playParams != nil) {
+            MPMusicPlayerPlayParametersQueueDescriptor *ppDesc =
+                [[MPMusicPlayerPlayParametersQueueDescriptor alloc] initWithPlayParametersQueue:@[playParams]];
+            MPMusicPlayerController *player = [MPMusicPlayerController systemMusicPlayer];
+            [player setQueueWithDescriptor:ppDesc];
+            [player prepareToPlayWithCompletionHandler:^(NSError *error) {
+                if (error != nil) NSLog(@"[MusicRemote] radio playParams prepare failed: %@", error.localizedDescription);
+            }];
+            if (shouldPlay) [player play];
+            else [player pause];
+            return YES;
+        }
+    }
+    return NO;
+}
+
 @interface MRBridge : NSObject
 + (instancetype)sharedBridge;
 - (void)start;
@@ -475,9 +596,61 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
 - (NSDictionary *)snapshotAction {
     MPMusicPlayerController *player = [MPMusicPlayerController systemMusicPlayer];
     MPMediaItem *item = player.nowPlayingItem;
-    if (item == nil) MRFail(@"nothing is playing");
+
+    NSDictionary *mrInfo = MRCopyNowPlayingInfo();
+    id isMusicVal = mrInfo[@"kMRMediaRemoteNowPlayingInfoIsMusicApp"];
+    BOOL mrBelongsToMusic = (isMusicVal != nil) ? [isMusicVal boolValue] : (item != nil);
+    if (!mrBelongsToMusic) mrInfo = nil;
+
+    NSDictionary *colInfo = [mrInfo[@"kMRMediaRemoteNowPlayingInfoCollectionInfo"] isKindOfClass:[NSDictionary class]]
+        ? mrInfo[@"kMRMediaRemoteNowPlayingInfoCollectionInfo"] : nil;
+    NSDictionary *colIDs = [colInfo[@"kMRMediaRemoteNowPlayingCollectionInfoKeyIdentifiers"] isKindOfClass:[NSDictionary class]]
+        ? colInfo[@"kMRMediaRemoteNowPlayingCollectionInfoKeyIdentifiers"] : nil;
+
+    NSString *stationID = MRDictString(mrInfo, @"kMRMediaRemoteNowPlayingInfoRadioStationStringIdentifier");
+    if (stationID.length == 0) stationID = MRDictString(colIDs, @"kMRMediaRemoteNowPlayingInfoRadioStationStringIdentifier");
+    NSString *stationHash = MRDictString(mrInfo, @"kMRMediaRemoteNowPlayingInfoRadioStationHash");
+    if (stationHash.length == 0) stationHash = MRDictString(colIDs, @"kMRMediaRemoteNowPlayingInfoRadioStationHash");
+    NSString *stationName = MRDictString(mrInfo, @"kMRMediaRemoteNowPlayingInfoRadioStationName");
+    if (stationName.length == 0) stationName = MRDictString(colInfo, @"kMRMediaRemoteNowPlayingCollectionInfoKeyTitle");
+    long long stationNumericID = MRDictInt64(mrInfo, @"kMRMediaRemoteNowPlayingInfoRadioStationIdentifier");
+    if (stationNumericID == 0) stationNumericID = MRDictInt64(colIDs, @"kMRMediaRemoteNowPlayingInfoRadioStationIdentifier");
+    NSString *colType = MRDictString(colInfo, @"kMRMediaRemoteNowPlayingCollectionInfoKeyCollectionType");
+
+    BOOL isRadio = (stationID.length > 0 || stationHash.length > 0 || stationNumericID != 0 ||
+                    [colType isEqualToString:@"kMRMediaRemoteNowPlayingCollectionInfoCollectionTypeRadio"]);
+    BOOL isLive = [mrInfo[@"kMRMediaRemoteNowPlayingInfoIsAlwaysLive"] boolValue];
+
+    if (item == nil && !isRadio) MRFail(@"nothing is playing");
 
     NSMutableDictionary *data = [MRStatusDict() mutableCopy];
+    if (item == nil && mrInfo != nil) {
+        NSString *t = MRDictString(mrInfo, @"kMRMediaRemoteNowPlayingInfoTitle");
+        NSString *a = MRDictString(mrInfo, @"kMRMediaRemoteNowPlayingInfoArtist");
+        NSString *al = MRDictString(mrInfo, @"kMRMediaRemoteNowPlayingInfoAlbum");
+        if (t.length > 0) data[@"title"] = t;
+        if (a.length > 0) data[@"artist"] = a;
+        if (al.length > 0) data[@"album"] = al;
+        if ([data[@"state"] isEqualToString:@"stopped"]) {
+            double rate = [mrInfo[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"] respondsToSelector:@selector(doubleValue)]
+                ? [mrInfo[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"] doubleValue] : 0.0;
+            if (rate > 0.0) data[@"state"] = @"playing";
+        }
+    }
+    if ([data[@"storeID"] length] == 0 && mrInfo != nil) {
+        long long mrStore = MRDictInt64(mrInfo, @"kMRMediaRemoteNowPlayingInfoiTunesStoreIdentifier");
+        if (mrStore > 0) data[@"storeID"] = [NSString stringWithFormat:@"%lld", mrStore];
+    }
+
+    if (isRadio) {
+        data[@"isRadio"] = @YES;
+        data[@"isLive"] = @(isLive);
+        if (stationID.length > 0) data[@"stationID"] = stationID;
+        if (stationHash.length > 0) data[@"stationHash"] = stationHash;
+        if (stationName.length > 0) data[@"stationName"] = stationName;
+        if (stationNumericID != 0) data[@"stationNumericID"] = [NSString stringWithFormat:@"%lld", stationNumericID];
+    }
+
     NSUInteger index = player.indexOfNowPlayingItem;
     NSUInteger total = [player respondsToSelector:@selector(numberOfItems)] ? player.numberOfItems : 0;
     const NSUInteger maxItems = 600;
@@ -523,7 +696,7 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
         }
     }
 
-    if (queue.count == 0) {
+    if (queue.count == 0 && item != nil) {
         NSMutableDictionary *entry = [NSMutableDictionary dictionary];
         NSString *storeID = MRItemString(item, MPMediaItemPropertyPlaybackStoreID);
         if (storeID.length > 0 && strtoull(storeID.UTF8String, NULL, 10) > 0) {
@@ -548,6 +721,10 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
 }
 
 - (NSDictionary *)handoffAction:(NSDictionary *)args {
+    NSString *stationID = MRStringArgument(args, @"stationID");
+    NSString *stationNumericStr = MRStringArgument(args, @"stationNumericID");
+    NSString *stationName = MRStringArgument(args, @"stationName");
+    long long stationNumericID = stationNumericStr.length > 0 ? strtoll(stationNumericStr.UTF8String, NULL, 10) : 0;
     NSArray *rawStoreIDs = [args[@"ids"] isKindOfClass:[NSArray class]] ? args[@"ids"] : nil;
     NSArray *rawPIDs = [args[@"pids"] isKindOfClass:[NSArray class]] ? args[@"pids"] : nil;
     NSString *start = MRStringArgument(args, @"start");
@@ -555,6 +732,29 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
     BOOL shouldPlay = [args[@"play"] respondsToSelector:@selector(boolValue)] ? [args[@"play"] boolValue] : YES;
     NSString *shuffleStr = MRStringArgument(args, @"shuffle") ?: @"off";
     NSString *repeatStr = MRStringArgument(args, @"repeat") ?: @"none";
+
+    if (stationID.length > 0 || stationNumericID != 0) {
+        NSString *radioError = nil;
+        if (!MRStartRadioStation(stationID, stationNumericID, shouldPlay, &radioError)) {
+            NSString *label = stationName.length > 0 ? stationName : (stationID.length > 0 ? stationID : @"radio station");
+            MRFail(@"%@", radioError ?: [NSString stringWithFormat:@"could not start %@", label]);
+        }
+        MPMusicPlayerController *player = [MPMusicPlayerController systemMusicPlayer];
+        if (shouldPlay) {
+            // Give Music.app a moment to load the live stream metadata so status reflects it.
+            for (int i = 0; i < 8; i++) {
+                if (player.playbackState == MPMusicPlaybackStatePlaying && player.nowPlayingItem != nil) break;
+                usleep(150000);
+            }
+        }
+        NSMutableDictionary *data = [MRStatusDict() mutableCopy];
+        data[@"queued"] = @1;
+        data[@"played"] = @(shouldPlay);
+        data[@"isRadio"] = @YES;
+        if (stationID.length > 0) data[@"stationID"] = stationID;
+        if (stationName.length > 0) data[@"stationName"] = stationName;
+        return data;
+    }
 
     MPMusicPlayerQueueDescriptor *descriptor = nil;
     NSUInteger queuedCount = 0;
@@ -604,22 +804,32 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
         descriptor = itemDesc;
         queuedCount = items.count;
     } else {
-        MRFail(@"handoff needs \"ids\" or \"pids\"");
+        MRFail(@"handoff needs \"ids\", \"pids\", or \"stationID\"");
     }
 
     MPMusicPlayerController *player = [MPMusicPlayerController systemMusicPlayer];
     MPMusicShuffleMode targetShuffle = MRShuffleModeFromString(shuffleStr);
     MPMusicRepeatMode targetRepeat = MRRepeatModeFromString(repeatStr);
 
+    if (targetShuffle != MPMusicShuffleModeDefault) player.shuffleMode = targetShuffle;
+    if (targetRepeat != MPMusicRepeatModeDefault) player.repeatMode = targetRepeat;
+
     [player setQueueWithDescriptor:descriptor];
 
-    dispatch_semaphore_t ready = dispatch_semaphore_create(0);
     __block NSError *prepareError = nil;
+    dispatch_semaphore_t ready = dispatch_semaphore_create(0);
     [player prepareToPlayWithCompletionHandler:^(NSError *error) {
         prepareError = error;
         dispatch_semaphore_signal(ready);
     }];
-    dispatch_semaphore_wait(ready, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.5 * NSEC_PER_SEC)));
+
+    if (shouldPlay) {
+        // Call play immediately like queueByStore so cold-started Music.app activates instead of stalling.
+        [player play];
+        dispatch_semaphore_wait(ready, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)));
+    } else {
+        dispatch_semaphore_wait(ready, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)));
+    }
     if (prepareError != nil) {
         NSLog(@"[MusicRemote] handoff prepare failed: %@", prepareError.localizedDescription);
     }
@@ -629,7 +839,6 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
     if (targetRepeat != MPMusicRepeatModeDefault) player.repeatMode = targetRepeat;
 
     if (shouldPlay) {
-        [player play];
         if (elapsed > 0.5 && fabs(player.currentPlaybackTime - elapsed) > 2.0) {
             player.currentPlaybackTime = elapsed;
         }
@@ -639,6 +848,10 @@ static void MRRequestCallback(CFNotificationCenterRef center, void *observer, CF
     }
 
     NSMutableDictionary *data = [MRStatusDict() mutableCopy];
+    NSUInteger total = [data[@"total"] unsignedIntegerValue];
+    if (prepareError != nil && total == 0 && player.nowPlayingItem == nil) {
+        MRFail(@"handoff failed: %@", prepareError.localizedDescription);
+    }
     data[@"queued"] = @(queuedCount);
     data[@"played"] = @(shouldPlay);
     return data;

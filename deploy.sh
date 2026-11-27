@@ -29,8 +29,12 @@ if [ "$NO_INSTALL" = "1" ]; then
 fi
 
 PASSWORD="${RC_PASSWORD:-}"
+if [ -z "$PASSWORD" ] && command -v security >/dev/null 2>&1; then
+    PASSWORD=$(security find-generic-password -a "${USER:-$(id -un)}" -s "RC_PASSWORD" -w 2>/dev/null \
+        || security find-generic-password -s "RC_PASSWORD" -w 2>/dev/null || true)
+fi
 if [ -z "$PASSWORD" ]; then
-    echo "RC_PASSWORD is not set (the mobile user's password on $TARGET)"
+    echo "RC_PASSWORD is not set (set RC_PASSWORD or store it in macOS Keychain under service RC_PASSWORD)"
     exit 1
 fi
 

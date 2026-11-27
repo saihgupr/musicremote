@@ -11,26 +11,10 @@ Two pieces, one package:
 - `musicremote` is a small CLI on the device that resolves names against the
   iTunes library database and sends the request.
 
-`rc music ...` ([RemoteCompanion](https://github.com/saihgupr/remotecompanion)) runs the same CLI through a **RemoteCompanion
-add-on** that ships in this package. RemoteCompanion needs no code changes for
-it: the file is `layout/Library/RemoteCompanion/AddOns/music.json`, installed to
-`/var/jb/Library/RemoteCompanion/AddOns/`, and RemoteCompanion picks it up
-without a respring. `rc addons` lists it as `MusicRemote (music)`.
-
-The add-on is deliberately small, because the phone UI is buttons. It exposes
-play, pause, play or pause, next, previous, queue this artist, queue this album,
-add this artist to the queue, add this album to the queue, love the playing
-song, transfer playback, and pull playback. One condition, player state
-(Playing / Paused / Stopped), covers automations, and Settings > Add-ons >
-MusicRemote configures the transfer target, overlap delay, and paused behavior.
-Everything else (name queues, search, library counts, volume, queue variants)
-stays in the CLI, where it is actually useful. Check the condition with
-`rc addons check addon:music:state`.
-
 <p>
-  <img src="images/cli.png" width="560" alt="musicremote CLI" />
   <img src="images/addon-1.png" width="240" alt="MusicRemote RemoteCompanion add-on settings" />
   <img src="images/addon-2.jpg" width="240" alt="MusicRemote RemoteCompanion add-on actions" />
+  <img src="images/cli.png" width="560" alt="musicremote CLI" />
 </p>
 
 ## Why it is built this way
@@ -104,7 +88,18 @@ musicremote pull [source]               # pull playback from another device
 musicremote --json status
 ```
 
-Through RemoteCompanion, the add-on exposes:
+## RemoteCompanion add-on
+
+[RemoteCompanion](https://github.com/saihgupr/remotecompanion) can run the CLI
+through a built-in add-on that ships in this package. No changes to
+RemoteCompanion are needed: `layout/Library/RemoteCompanion/AddOns/music.json`
+installs to `/var/jb/Library/RemoteCompanion/AddOns/`, and RemoteCompanion picks
+it up without a respring. `rc addons` lists it as `MusicRemote (music)`.
+
+The add-on focuses on quick button actions—play, pause, play/pause, next,
+previous, queue/append artist or album, love the playing song, transfer
+playback, and pull playback—while leaving name queues, search, library counts,
+and volume to the CLI:
 
 ```sh
 rc music playpause
@@ -115,6 +110,11 @@ rc music love
 rc music transfer
 rc music pull
 ```
+
+It also exposes a player state condition (`Playing` / `Paused` / `Stopped`) for
+automations (`rc addons check addon:music:state`), and **Settings > Add-ons >
+MusicRemote** configures the transfer target, overlap delay, and paused
+behavior.
 
 `transfer` and `pull` use the **Transfer Target** configured in RemoteCompanion
 (Settings > Add-ons > MusicRemote, defaulting to `Auto` which selects the first

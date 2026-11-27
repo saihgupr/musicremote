@@ -8,3 +8,4 @@ Author: saihgupr
 Section: Tweaks
 Depends: firmware (>= 15.0), ellekit
 Suggests: com.saihgupr.remotecompanion, openssh-client, sshpass
+Icon: https://raw.githubusercontent.com/saihgupr/musicremote/main/images/Icon.png
